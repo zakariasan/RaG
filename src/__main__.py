@@ -2,13 +2,40 @@ import fire
 import ast
 
 
+def get_offsets(lines):
+    line_offsets = [0]
+    for i, item in enumerate(lines):
+        offset = line_offsets[i] + len(item)
+        line_offsets.append(offset)
+    return line_offsets
+
+
 def chunk_pfile(filename, max_size):
     """ try to chunks a file """
     with open(filename, 'r') as f:
         src_file = f.read()
     tree = ast.parse(src_file)
-    nodes = ast.iter_child_nodes(tree)
-    content = src_file.splitlines(keepends=True)
+    nodes = tree.body
+    lines = src_file.splitlines(keepends=True)
+    line_offsets = get_offsets(lines)
+    cut_points = []
+    for node in nodes:
+        start_line = node.lineno
+        decorators = getattr(node, 'decorator_list', [])
+        if decorators:
+            start_line = decorators[0].lineno
+        else:
+            start_line = node.lineno
+        cut_points.append(line_offsets[start_line - 1])
+
+    pair_offsets = list(zip(cut_points, cut_points[1:])) 
+
+    print("line_offsets: ", line_offsets)
+    print("cut_pts: ", cut_points)
+    print("pairs: ", pair_offsets)
+    print(lines)
+
+    content = lines
     chunks = []
     curr = []
     len_curr = 0
