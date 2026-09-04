@@ -10,90 +10,84 @@ def get_offsets(lines):
     return line_offsets
 
 
-def chunk_pfile(filename, max_size):
-    """ try to chunks a file """
-    with open(filename, 'r') as f:
-        src_file = f.read()
-    tree = ast.parse(src_file)
-    nodes = tree.body
-    lines = src_file.splitlines(keepends=True)
-    line_offsets = get_offsets(lines)
-    cut_points = []
+def hard_split(s, e, line_offsets, max_size):
+    """breakk into our string"""
+    chunk_start = s
+    if e - s <= max_size:
+        return [(s, e)]
+    elem = [off for off in line_offsets if s < off < e]
+    bound = elem + [e]
+    res = []
+    i = 0
+    while chunk_start < e:
+        last_good = None
+        while i < len(bound) and bound[i] - chunk_start <= max_size:
+            last_good = bound[i]
+            i += 1
+        if last_good is not None:
+            res.append((chunk_start, last_good))
+            chunk_start = last_good
+        else:
+            res.append((chunk_start, chunk_start + max_size))
+            chunk_start += max_size
+    return res
+
+
+def chunk_nodes(nodes, start, end, src_file, line_offsets, max_size):
+    starts = []
     for node in nodes:
         start_line = node.lineno
         decorators = getattr(node, 'decorator_list', [])
         if decorators:
             start_line = decorators[0].lineno
-        else:
-            start_line = node.lineno
-        cut_points.append(line_offsets[start_line - 1])
+        starts.append((line_offsets[start_line - 1], node))
 
-    pair_offsets = list(zip(cut_points, cut_points[1:])) 
+    if not starts or starts[0][0] > start:
+        starts.insert(0, (start, None))
+    starts.append((end, None))
 
-    print("line_offsets: ", line_offsets)
-    print("cut_pts: ", cut_points)
-    print("pairs: ", pair_offsets)
-    print(lines)
+    pairs = []
+    for (s, node), (e, _) in zip(starts, starts[1:]):
+        if s < e:
+            pairs.append((s, e, node))
 
-    content = lines
-    chunks = []
-    curr = []
-    len_curr = 0
-
-    for item in nodes:
-        elem = []
-        start = item.lineno - 1
-        end = item.end_lineno
-        elem_to = content[start] if start + 1 == end else content[start: end]
-        elem.append(elem_to)
-        for line in elem:
-            if len(line) + len_curr <= max_size:
-                curr.append(line)
-                len_curr += len(line)
-            else:
-                if curr:
-                    chunks.append(curr)
-                    curr = []
-                    len_curr = 0
-                else:
-                    chunks.append(line[:max_size])
-                    curr = line[max_size:]
-                    len_curr = len(curr)
-
-    if curr:
-        chunks.append(curr)
-    print(chunks)
-
-
-"""
-for node in tree.body:
-        print("---------------------------------")
-        print(ast.get_source_segment(src_file, node))
-        print("---------------------------------")
-        start_line = node.lineno - 1
-        end_line = node.end_lineno
-        node_lines = lines[start_line: end_line]
-        node_code = '\n'.join(node_lines)
-        node_size = len(node_code)
-
-        if node_size > max_size:
+    cuts = []
+    curr = None
+    for (s, e, node) in pairs:
+        if e - s > max_size:
             if curr:
-                chunks.append("\n".join(curr))
-                curr = []
-                len_curr = 0
-                continue
-
-        if len_curr + node_size > max_size and curr:
-            chunks.append("\n".join(curr))
-            curr = [node_code]
-            len_curr = node_size
+                cuts.append(curr)
+                curr = None
+            if node is not None and getattr(node, 'body', None):
+                cuts.extend(chunk_nodes(node.body, s, e,
+                                        src_file, line_offsets, max_size))
+            else:
+                cuts.extend(hard_split(s, e, line_offsets, max_size))
+        elif curr is None:
+            curr = (s, e)
+        elif e - curr[0] <= max_size:
+            curr = (curr[0], e)
         else:
-            curr.append(node_code)
-            len_curr += node_size
+            cuts.append(curr)
+            curr = (s, e)
     if curr:
-        chunks.append('\n'.join(curr))
-    return chunks
-"""
+        cuts.append(curr)
+    return cuts
+
+
+def chunk_pfile(filename, max_size):
+    """ try to chunks a file """
+    with open(filename, 'r', encoding='utf-8') as f:
+        src_file = f.read()
+    tree = ast.parse(src_file)
+    line_offsets = get_offsets(src_file.splitlines(keepends=True))
+    chunks = chunk_nodes(tree.body, 0, len(src_file),
+                         src_file, line_offsets, max_size)
+    # assert ''.join(src_file[a:b] for a, b in chunks) == src_file
+    res = []
+    for chunk in chunks:
+        res.append(src_file[chunk[0]: chunk[1]])
+    return res 
 
 
 def hello(name="World"):
@@ -105,8 +99,9 @@ def index_cli(max_chunk_size=5):
 
 
 def chunk_cli(file, max_size):
-    #import pudb; pudb.set_trace()
-    chunk_pfile(file, max_size)
+    # import pudb; pudb.set_trace()
+    res = chunk_pfile(file, max_size)
+    print(res)
 
 
 if __name__ == '__main__':
