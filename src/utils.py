@@ -1,3 +1,8 @@
+def ft_open(filename):
+    """Open a file """
+    with open(filename, 'r', encoding='utf-8') as f:
+        src_file = f.read()
+    return src_file
 
 
 def get_offsets(lines):
