@@ -1,4 +1,4 @@
-from utils import get_offsets, hard_split
+from .utils import get_offsets, hard_split
 
 
 def chunk_txt_file(filename, max_size):

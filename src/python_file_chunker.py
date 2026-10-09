@@ -1,5 +1,5 @@
 import ast
-from utils import get_offsets, hard_split
+from .utils import get_offsets, hard_split
 
 
 def chunk_nodes(nodes, start, end, src_file, line_offsets, max_size):
