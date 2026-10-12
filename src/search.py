@@ -31,7 +31,7 @@ def search(
             print(
                 f"{c['file_path']} "
                 +
-                "[{c['first_character_index']}:{c['last_character_index']}]")
+                f"[{c['first_character_index']}:{c['last_character_index']}]")
     except (OSError, FileNotFoundError):
         raise ValueError('Index file not Found.')
 
