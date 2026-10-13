@@ -1,7 +1,10 @@
 import json
-from .index import tokenizer
 import os
+
 import bm25s
+from tqdm import tqdm
+
+from .index import tokenizer
 
 
 def search(
@@ -25,7 +28,7 @@ def search(
         if len(tokens) == 0:
             raise ValueError('Empty query')
         k = min(k, len(chunks))
-        res, scores = retriever.retrieve([tokens], k=k, show_progress=False)
+        res, _scores = retriever.retrieve([tokens], k=k, show_progress=False)
         for i in res[0]:
             c = chunks[i]
             print(

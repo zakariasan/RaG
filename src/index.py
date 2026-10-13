@@ -1,21 +1,23 @@
+import fnmatch
+import json
+import os
+import re
+
+import bm25s
+from tqdm import tqdm
+
+from .models import MinimalSource
 from .python_file_chunker import chunk_pfile
 from .txt_file_chunker import chunk_txt_file
 from .utils import ft_open
-import os
-import fnmatch
-import re
-import bm25s
-import json
-from tqdm import tqdm
 
 
 def git_file() -> list[str]:
     """ Scrape Every git file to igonore it
-
     """
     try:
         tmp = ft_open('./.gitignore')
-    except (FileNotFoundError, Exception):
+    except (FileNotFoundError):
         return []
     res = []
     for item in tmp.splitlines():
@@ -27,18 +29,16 @@ def git_file() -> list[str]:
 
 
 def skip_file(path):
+    """skip files in .gotignore"""
     to_skip = git_file()
-    if path in to_skip:
-        return True
-    return False
+    return path in to_skip
 
 
 def skip_folder(path):
+    """skip folders ignored by git"""
     path = path.split('/')[-1]
     to_skip = git_file()
-    if path + '/' in to_skip:
-        return True
-    return False
+    return path + '/' in to_skip
 
 
 def is_ignored(name: str, patterns: list[str]) -> bool:
@@ -49,13 +49,18 @@ def is_ignored(name: str, patterns: list[str]) -> bool:
             return True
     return False
 
-def index_machine(main_path: str, max_size: int) -> tuple[list[tuple[str, int, int]], list[str]]:
-    chunk_meta = []      # will hold (file_path, a, b)
-    chunk_texts = []     # will hold the chunk's text
 
+def index_machine(
+    main_path: str,
+    max_size: int
+) -> tuple[list[tuple[str, int, int]], list[str]]:
+    """machine that check if file can chunk it or no"""
+
+    chunk_meta = []
+    chunk_texts = []
     pattern = git_file()
-    space = ''
     files_work = []
+
     for path, folder, files in os.walk(main_path):
         folder[:] = [d for d in folder if not is_ignored(d, pattern)]
         for file in files:
@@ -64,6 +69,7 @@ def index_machine(main_path: str, max_size: int) -> tuple[list[tuple[str, int, i
             else:
                 full_path = os.path.join(path, file)
                 files_work.append(full_path)
+
     for fil in tqdm(files_work, desc='Chunking:', unit='file'):
         try:
             if fil.endswith('.py'):
@@ -72,12 +78,11 @@ def index_machine(main_path: str, max_size: int) -> tuple[list[tuple[str, int, i
                 pairs = chunk_txt_file(fil, max_size)
             src = ft_open(fil)
             for (start, end) in pairs:
-                chunk_meta.append((fil, start, end))
-                chunk_texts.append(src[start: end])
+                minimal_src = MinimalSource(fil, start, end)
+                chunk_meta.append(minimal_src)
         except (SyntaxError, UnicodeDecodeError, OSError):
             continue
-    return chunk_meta, chunk_texts
-
+    return chunk_meta
 
 def tokenizer(string: str) -> list[str]:
     """ Clearify meaning with waht we want for bm25"""
@@ -95,22 +100,25 @@ def tokenizer(string: str) -> list[str]:
 def index(
     max_chunk_size: int = 2000,
     files: str = 'data/raw',
-    save_dir: str = './data/processed/'
+    save_dir: str = 'data/processed/'
 ) -> None:
     """Chunk file into chunks and index it depend on the chunk """
 
     if max_chunk_size <= 0:
         raise ValueError("max_chunk_size must be positive")
-    meta, txt = index_machine(files, max_chunk_size)
+
+    chunk_meta = index_machine(files, max_chunk_size)
     os.makedirs(save_dir, exist_ok=True)
     chunks_path = os.path.join(save_dir, 'chunks.json')
     with open(chunks_path, 'w', encoding='utf-8') as file_opend:
-        json.dump([{'file_path': f, 'first_character_index': a, 'last_character_index': b}
-                   for f, a, b in meta], file_opend)
+        json.dump(
+            [item.model_dump() for item in chunk_meta],
+            file_opend,
+            indent=4)
 
-    corpus_tokens = [tokenizer(t) for t in tqdm(txt, desc='Tokenizing:')]
-    retriever = bm25s.BM25()
-    retriever.index(corpus_tokens)
-    retriever.save(save_dir)
+#    corpus_tokens = [tokenizer(t) for t in tqdm(txt, desc='Tokenizing:')]
+#    retriever = bm25s.BM25()
+#    retriever.index(corpus_tokens)
+#    retriever.save(save_dir)
     print("Ingestion complete! Indexed ", end='')
-    print(f"chunks under {len(meta)}")
+    print(f"chunks under {len(chunk_meta)}")
