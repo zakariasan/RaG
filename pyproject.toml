@@ -8,5 +8,6 @@ dependencies = [
     "bm25>=0.3.11",
     "fire>=0.7.1",
     "pudb>=2025.1.5",
+    "pydantic>=2.14.1",
     "tqdm>=4.70.1",
 ]

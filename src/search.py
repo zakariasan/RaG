@@ -5,12 +5,13 @@ import bm25s
 from tqdm import tqdm
 
 from .index import tokenizer
+from models import RagDataset
 
 
 def search(
     query: str = '',
     k: int = 10,
-    save_dir: str = 'data/processed/',
+    save_directory: str = 'data/processed/',
     load_dir: str = 'chunks.json'
 ) -> None:
     """
@@ -20,37 +21,40 @@ def search(
     if k <= 0:
         raise ValueError('K must be positive.')
     try:
-        with open(os.path.join(save_dir, load_dir), encoding='utf-8') as file:
+        with open(os.path.join(save_directory, load_dir), encoding='utf-8') as file:
             chunks = json.load(file)
 
-        retriever = bm25s.BM25.load(save_dir)
+        retriever = bm25s.BM25.load(save_directory)
         tokens = tokenizer(query)
         if len(tokens) == 0:
             raise ValueError('Empty query')
         k = min(k, len(chunks))
-        res, _scores = retriever.retrieve([tokens], k=k, show_progress=False)
+        res, _scores = retriever.retrieve([tokens], k=k, show_progress=True)
         for i in res[0]:
             c = chunks[i]
             print(
                 f"{c['file_path']} "
                 +
                 f"[{c['first_character_index']}:{c['last_character_index']}]")
-    except (OSError, FileNotFoundError):
+    except (OSError, FileNotFoundError, PermissionError):
         raise ValueError('Index file not Found.')
 
     def search_dataset(
         dataset_path: str = 'data/datasets/AnsweredQuestions/',
         k: int = 5,
-        save_dir: str = '/data/output/search_results',
+        save_directory: str = '/data/output/search_results',
         save_processed='/data/processed/chunks.json'
     ) -> None:
         """search from the input datasets"""
 
         with open(dataset_path, encoding='utf-8') as f:
             questions = json.load(f)
+        RagDataset.model_validate_json(dataset_path)
         with open(save_processed, encoding='utf-8') as f:
             load_index = json.load(f)
-
+        all_tokens = [tokenizer(q.question) for q in questions]
+        retriever = bm25s.BM25.load(save_directory)
+        retriever = bm25s.BM25.retriever(all_tokens, k=k)
         for question in tqdm(questions,
                              desc='answare question',
                              unit='question'):

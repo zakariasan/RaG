@@ -16,6 +16,8 @@ def get_offsets(lines):
 def hard_split(s, e, line_offsets, max_size):
     """breakk into our string"""
     chunk_start = s
+    if max_size <= 0:
+        raise ValueError("max_size should be positive.")
     if e - s <= max_size:
         return [(s, e)]
     elem = [off for off in line_offsets if s < off < e]
