@@ -48,23 +48,24 @@ def search(
 
 
 def search_dataset(
-    dataset_path: str = 'data/datasets/UnansweredQuestions',
+    dataset_path: str = 'data/datasets/UnansweredQuestions/dataset_docs_public.json',
     k: int = 5,
     save_directory: str = 'data/output/search_results/UnansweredQuestions',
-    save_processed='data/processed'
+    save_processed='data/processed',
+    saved_file='chunks.json'
 ) -> None:
     """search from the input datasets"""
 
     with open(
-        os.path.join(dataset_path, 'dataset_docs_public.json'),
+        dataset_path,
         encoding='utf-8'
     ) as f:
-        questions = json.load(f)
+        questions = f.read()
 
     ds = RagDataset.model_validate_json(questions)
 
     with open(
-        os.path.join(save_processed, 'chunks.json'),
+        os.path.join(save_processed, saved_file),
         encoding='utf-8'
     ) as f:
         chunks = json.load(f)
