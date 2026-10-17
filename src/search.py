@@ -8,7 +8,8 @@ from .index import tokenizer
 from .models import (
     RagDataset,
     MinimalSource,
-    MinimalSearchResults
+    MinimalSearchResults,
+    StudentSearchResults
 )
 
 from .utils import ft_open
@@ -47,37 +48,47 @@ def search(
 
 
 def search_dataset(
-    dataset_path: str = 'data/datasets/UnansweredQuestions/dataset_docs_public.json',
+    dataset_path: str = 'data/datasets/UnansweredQuestions',
     k: int = 5,
-    save_directory: str = '/data/output/search_results/UnansweredQuestions',
-    save_processed='/data/processed/chunks.json'
+    save_directory: str = 'data/output/search_results/UnansweredQuestions',
+    save_processed='data/processed'
 ) -> None:
     """search from the input datasets"""
 
-    with open(dataset_path, encoding='utf-8') as f:
+    with open(
+        os.path.join(dataset_path, 'dataset_docs_public.json'),
+        encoding='utf-8'
+    ) as f:
         questions = json.load(f)
-    RagDataset.model_validate_json(questions)
 
-    with open(save_processed, encoding='utf-8') as f:
+    ds = RagDataset.model_validate_json(questions)
+
+    with open(
+        os.path.join(save_processed, 'chunks.json'),
+        encoding='utf-8'
+    ) as f:
         chunks = json.load(f)
-    all_tokens = [tokenizer(q.question) for q in questions.rag_questions]
-    retriever = bm25s.BM25.load(save_directory)
+    all_tokens = [tokenizer(q.question) for q in ds.rag_questions]
+    retriever = bm25s.BM25.load(save_processed)
     res, _scores = retriever.retrieve(all_tokens, k=k)
 
     rows = []
-    for i, q in enumerate(tqdm(
-        questions.rag_questions,
-        desc='Searching', unit='question')):
+    for i, q in enumerate(
+        tqdm(
+            ds.rag_questions,
+            desc='Searching',
+            unit='question'
+            )):
         srcs = [MinimalSource(**chunks[j]) for j in res[i]]
         rows.append(
             MinimalSearchResults(
                 question_id=q.question_id,
                 question=q.question,
                 retrieved_sources=srcs))
-        out = StudentSearchResults(search_results=rows, k=k)
-        os.makedirs(save_directory, exist_ok=True)
-        path = os.path.join(save_directory, os.path.basename(dataset_path))
+    out = StudentSearchResults(search_results=rows, k=k)
+    os.makedirs(save_directory, exist_ok=True)
+    path = os.path.join(save_directory, os.path.basename(dataset_path))
 
-        with open(path, 'w') as f:
-            f.write(out.model_dump_json(indent=4))
-        print(f'Saved student_search_results to {path}')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(out.model_dump_json(indent=4))
+    print(f'Saved student_search_results to {path}')
