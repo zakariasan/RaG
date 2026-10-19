@@ -24,7 +24,13 @@ against it is meaningless.
 ```sh
 uv run python -m src index --max_chunk_size 2000
 ```
-Expect ~18 700 chunks, ~7 s. Then regenerate both search outputs:
+Expect ~18 700 chunks, ~7 s.
+
+Then delete the junk output left by the pre-fix run — wrong name, built on the stale index:
+```sh
+rm data/output/search_results/UnansweredQuestions/UnansweredQuestions
+```
+Then regenerate both search outputs:
 ```sh
 uv run python -m src search_dataset \
   --dataset_path data/datasets/UnansweredQuestions/dataset_docs_public.json --k 5 \
