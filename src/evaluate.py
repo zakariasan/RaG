@@ -26,9 +26,10 @@ def evaluate(
         questions = StudentSearchResults(search_results=questions['search_results'], k=k)
         g_checker = RagDataset(rag_questions=ground_checker['rag_questions'])
 
-        for question in tqdm(questions, desc='Evaluation', unit=' question'):
-            quest = [d for d in g_checker if d.question_id == question.id][0]
-
+        hits = 0
+        for question in questions.search_results:
+            truth = g_checker.rag_questions[question.question_id]
+            for src in question
 
     except (OSError, PermissionError, FileNotFoundError) as e:
 

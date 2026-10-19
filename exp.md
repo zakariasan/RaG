@@ -1,3 +1,51 @@
+Good move — iou is correct, both files load, you're reading AnsweredQuestions now. Three things stop it running, then the scoring itself is still missing.
+
+Crashes:
+
+1. for question in tqdm(questions, ...) — questions is a StudentSearchResults model, not a list. Pydantic models aren't iterable → TypeError: 'StudentSearchResults' object is not iterable. You want questions.search_results.
+2. for d in g_checker — same thing. g_checker.rag_questions.
+3. question.id — the field is question_id. AttributeError.
+
+Wrong path: data/datasets_public/public/AnsweredQuestions/... — I checked, data/datasets_public doesn't exist. It's:
+data/datasets/AnsweredQuestions/dataset_docs_public.json
+
+Missing the actual work. The loop finds quest and then stops — flake8 says it too: F841 local variable 'quest' is assigned to but never used. iou is never called, nothing is counted, nothing is printed. What's left:
+
+hits = 0
+for each row in questions.search_results:
+    truth = gt[row.question_id]                  # dict lookup
+    for src in row.retrieved_sources[:k]:        # rank order, first k only
+        if src.file_path == truth_source.file_path and iou(...) >= 0.05:
+            hits += 1
+            break                                 # one hit per question, stop
+recall = hits / len(questions.search_results)
+The break matters — a question counts once, not once per matching source.
+
+Build the lookup dict before the loop, not a list scan inside it:
+gt = {q.question_id: q for q in g_checker.rag_questions}
+Your [d for d in g_checker if d.question_id == question.id][0] rescans all 100 questions for every question — 10000 comparisons — and raises IndexError instead of a clear message when an id is missing.
+
+Smaller:
+
+- Use StudentSearchResults.model_validate_json(f.read()) instead of rebuilding with k=k. Right now you overwrite the file's own k with the CLI one, so the model says k=10 when the file holds 5 sources.
+- k: int = 10 can't work on your data — your files have 5 sources per row, so @10 equals @5. Print @1, @3, @5 and let k cap it.
+- except (OSError, PermissionError, FileNotFoundError) — the last two are subclasses of OSError, so just OSError. And it prints then falls through into the rest with undefined variables. raise ValueError(...) or return.
+- max_context_length still unused.
+- Missing -> None, and no type hints on iou's four params (mypy runs --disallow-untyped-defs).
+
+flake8, exact:
+6:1  E302 expected 2 blank lines, found 1
+7:9  E117 over-indented          (iou body has 8 spaces, use 4)
+11:1 E302 expected 2 blank lines, found 1
+26:80 E501 line too long (89 > 79)
+30:13 F841 'quest' assigned but never used
+33:5 E303 too many blank lines (2)
+40:1 W391 blank line at end of file
+
+Also move from tqdm import tqdm above from .models import ... — stdlib, then third-party, then local.
+
+Target when it runs: docs 0.540 / 0.760 / 0.830.
+
 What IoU is
 
 "Did my chunk land on the same text as the right answer?" Both are ranges of characters in the same file, so compare the ranges.
