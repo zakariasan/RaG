@@ -443,7 +443,31 @@ Tokenizer overlap, average shared tokens between a question and its correct chun
   are 0-byte `__init__.py`.
 - **Live demo.** For a LoRA question, the ground-truth chunk ranked **#1** at score 13.07.
 
-## 6.4 A deliberate decision, recorded
+## 6.4 Verified end-to-end run
+
+Full pipeline run from a clean index, both public datasets, `--max_chunk_size 2000 --k 5`:
+
+```
+index                 18 738 chunks · avg 1339 chars · max 2000 · 0 over budget · 2693 files
+search_dataset docs   100 rows · 5 sources each · span avg 1701
+search_dataset code    99 rows · 5 sources each · span avg 1514
+```
+
+| Dataset | R@1 | R@3 | **R@5** | Threshold | Margin |
+|---|---|---|---|---|---|
+| docs | 0.540 (54/100) | 0.760 (76/100) | **0.830** (83/100) | 0.80 | +3 questions |
+| code | 0.354 (35/99) | 0.566 (56/99) | **0.657** (65/99) | 0.50 | +16 questions |
+
+Every `question_id` in both output files matches its ground-truth twin, and both files carry the
+input basename. The numbers reproduce the earlier measurement exactly, which means the pipeline
+is deterministic across runs — the parallel-list invariant holds.
+
+**The R@1 -> R@5 climb is the point of k.** Only 54% of docs questions put the right chunk
+first, but 83% have it somewhere in the top 5. BM25 ranks by lexical overlap, which is a coarse
+signal; retrieving 5 and letting the LLM read all of them is what converts a mediocre ranker
+into a usable system.
+
+## 6.5 A deliberate decision, recorded
 
 Indexing **every** non-ignored file — `.json`, `.cu`, `.cuh`, `.h`, `.cpp` included — rather
 than filtering to `.py/.md/.rst/.txt` costs 2 docs questions (0.850 -> 0.830) and leaves a

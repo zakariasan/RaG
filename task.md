@@ -1,4 +1,18 @@
 # task.md — what is left to do
+Next task: evaluate — the command that does what I just ran by hand, so the feedback loop is yours.
+
+- In: --student_search_results_path, --dataset_path (the AnsweredQuestions twin)
+- Out: stdout only — Recall@1 / @3 / @5 / @10
+- Load ground truth into a dict keyed by question_id, match by id, never list position
+- Hit = file_path equal and IoU ≥ 0.05 over the character ranges
+- Register it in __main__.py alongside the catch-all fix
+
+def iou(a, b, c, d):
+    inter = max(0, min(b, d) - max(a, c))
+    union = max(b, d) - min(a, c)
+    return inter / union if union else 0.0
+
+Target: it must print 0.540 / 0.760 / 0.830 for docs and 0.354 / 0.566 / 0.657 for code. Those are the known-correct values, so they're your test.
 
 Remaining work only, for every part of the project. How the system works and what is already
 done live in `completed.md`. Shell tests per part live in `checker.md`.
@@ -9,49 +23,26 @@ Legend: `[ ]` not started · `[~]` partial · **BLOCKER** = nothing after it can
 
 # Status in one line
 
-Retrieval passes both thresholds (docs R@5 **0.830** / need 0.80, code **0.657** / need 0.50).
-`index`, `search`, `search_dataset` and the 8 models are done. Missing: `evaluate`, the
-moulinette check, answer generation, a real Markdown strategy, lint/typing, README.
+Retrieval **verified end to end** on both public datasets: docs R@5 **0.830** (need 0.80),
+code R@5 **0.657** (need 0.50). `index`, `search`, `search_dataset` and the 8 models are done.
+Missing: `evaluate`, the moulinette check, answer generation, a real Markdown strategy,
+lint/typing, README.
 
 ---
 
-# 0. Do this first — BLOCKER
+# 0. Done — see `completed.md` section 6.5
 
-**0.1 Re-index. The index on disk is stale.**
-`data/processed/` currently holds **404 096 chunks, average 62 characters, max 88** — the bad
-run that scores docs 0.460 / code 0.434, i.e. **both thresholds failed**. Every number measured
-against it is meaningless.
-```sh
-uv run python -m src index --max_chunk_size 2000
-```
-Expect ~18 700 chunks, ~7 s.
+The re-index and both search runs are finished and verified: docs R@5 **0.830**, code R@5
+**0.657**, both above threshold. One item from that step is still open:
 
-Then delete the junk output left by the pre-fix run — wrong name, built on the stale index:
-```sh
-rm data/output/search_results/UnansweredQuestions/UnansweredQuestions
-```
-Then regenerate both search outputs:
-```sh
-uv run python -m src search_dataset \
-  --dataset_path data/datasets/UnansweredQuestions/dataset_docs_public.json --k 5 \
-  --save_directory data/output/search_results/UnansweredQuestions --save_processed data/processed
-uv run python -m src search_dataset \
-  --dataset_path data/datasets/UnansweredQuestions/dataset_code_public.json --k 5 \
-  --save_directory data/output/search_results/UnansweredQuestions --save_processed data/processed
-```
-**Accept when:** both files exist, named `dataset_docs_public.json` and
-`dataset_code_public.json`, with `search_results` length 100 and 99, every `retrieved_sources`
-holding exactly 5 entries, and **one** `Saved ...` line printed per run.
-
-**0.2 Uncomment the catch-all in `__main__.py:14-15`.**
+**0.1 `[ ]` Uncomment the catch-all in `__main__.py:14-15`.**
 ```python
     except Exception as e:
         print(f"ERROR414: {e}")
 ```
-It is commented out right now, so every bug prints a full traceback. The subject requires the
-program never to crash on bad input. `except KeyboardInterrupt` stays as its own clause —
-`KeyboardInterrupt` derives from `BaseException`, not `Exception`, so it is not covered by the
-catch-all.
+Still commented, so every bug prints a full traceback. The subject requires the program never
+to crash on bad input. `except KeyboardInterrupt` stays as its own clause — it derives from
+`BaseException`, not `Exception`, so the catch-all does not cover it.
 
 ---
 
@@ -247,9 +238,9 @@ pyproject.toml, uv.lock                   at root                               
 README.md                                 at root                                [~] empty
 Makefile                                  install run debug clean lint           [x]
 data/raw/vllm-0.10.1/                     corpus                                 [x]
-data/processed/                           index output                           [x] stale
+data/processed/                           index output, 18 738 chunks            [x]
 data/datasets/{Unanswered,Answered}Questions/                                    [x]
-data/output/search_results/<Scope>/       from search_dataset                    [ ]
+data/output/search_results/<Scope>/       both datasets, verified                [x]
 data/output/search_results_and_answer/<Scope>/                                   [ ]
 ```
 `.gitignore` has `/data/*` active and `git ls-files data` returns nothing — **nothing under
@@ -273,18 +264,16 @@ stays there, and a later `git rm` does not shrink the repo. Verify with
 
 # Order of work
 
-1. **0.1** re-index at 2000 and regenerate both search outputs. *Nothing can be measured before
-   this.*
-2. **0.2** uncomment the catch-all. *One line.*
-3. **3** `evaluate`. *The feedback loop — everything after this becomes measurable instead of
+1. **0.1** uncomment the catch-all. *One line.*
+2. **3** `evaluate`. *The feedback loop — everything after this becomes measurable instead of
    guessed.*
-4. **4** moulinette, until `Student data is valid: True`. *Catches format errors our own
+3. **4** moulinette, until `Student data is valid: True`. *Catches format errors our own
    evaluator cannot see, e.g. a renamed output file.*
-5. **5** answer generation. *Biggest remaining piece, and it depends on the output format from
+4. **5** answer generation. *Biggest remaining piece, and it depends on the output format from
    step 1.*
-6. **1.1** Markdown chunker, then re-run `evaluate` on docs. *Keep it only if the number goes
+5. **1.1** Markdown chunker, then re-run `evaluate` on docs. *Keep it only if the number goes
    up.*
-7. **6** dead code, type hints, lint clean.
-8. **7, 8** Makefile fixes and the README's 10 sections.
-9. **9** tests.
-10. **11** bonus.
+6. **6** dead code, type hints, lint clean.
+7. **7, 8** Makefile fixes and the README's 10 sections.
+8. **9** tests.
+9. **11** bonus.
