@@ -11,7 +11,7 @@ if __name__ == '__main__':
                 'search': search,
                 'search_dataset': search_dataset
             })
-    # except Exception as e:
-    #    print(f"ERROR414: {e}")
+    except Exception as e:
+        print(f"ERROR414: {e}")
     except KeyboardInterrupt:
         print('KeyboardInterrupt -_-!')

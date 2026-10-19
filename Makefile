@@ -2,7 +2,7 @@ install:
 	uv sync
 
 run:
-	uv run python -m src index 
+	uv run python -m src index --max_chunk_size 2000
 
 debug:
 	pudb -m src
