@@ -1,19 +1,25 @@
-def ft_open(filename):
+def ft_open(filename: str) -> str:
     """Open a file """
     with open(filename, 'r', encoding='utf-8') as f:
         src_file = f.read()
     return src_file
 
 
-def get_offsets(lines):
-    line_offsets = [0]
+def get_offsets(lines: list[str]) -> list[int]:
+    """get offsets of files list"""
+    line_offsets: list[int] = [0]
     for i, item in enumerate(lines):
         offset = line_offsets[i] + len(item)
         line_offsets.append(offset)
     return line_offsets
 
 
-def hard_split(s, e, line_offsets, max_size):
+def hard_split(
+    s: int,
+    e: int,
+    line_offsets: list[int],
+    max_size: int
+) -> list[tuple[int, int]]:
     """breakk into our string"""
     chunk_start = s
     if max_size <= 0:

@@ -42,3 +42,12 @@ class StudentSearchResults(BaseModel):
 class StudentSearchResultsAndAnswer(BaseModel):
     search_results: List[MinimalAnswer]
     k: int
+
+
+class MoulinetAnsweredQuestion:
+    question_id: str
+    question: str
+    answer: str
+    sources: List[MinimalSource]
+    difficulty: str
+    is_valid: bool

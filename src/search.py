@@ -12,7 +12,7 @@ from .models import (
     StudentSearchResults
 )
 
-from .utils import ft_open
+# from .utils import ft_open
 
 
 def search(
@@ -28,7 +28,10 @@ def search(
     if k <= 0:
         raise ValueError('K must be positive.')
     try:
-        with open(os.path.join(save_directory, load_dir), encoding='utf-8') as file:
+        with open(
+            os.path.join(save_directory, load_dir),
+            encoding='utf-8'
+        ) as file:
             chunks = json.load(file)
 
         retriever = bm25s.BM25.load(save_directory)
@@ -48,11 +51,12 @@ def search(
 
 
 def search_dataset(
-    dataset_path: str = 'data/datasets_public/Public/UnansweredQuestions/dataset_docs_public.json',
+    dataset_path: str =
+    'data/datasets_public/Public/UnansweredQuestions/dataset_docs_public.json',
     k: int = 5,
     save_directory: str = 'data/output/search_results/UnansweredQuestions',
-    save_processed='data/processed',
-    saved_file='chunks.json'
+    save_processed: str = 'data/processed',
+    saved_file: str = 'chunks.json'
 ) -> None:
     """search from the input datasets"""
 

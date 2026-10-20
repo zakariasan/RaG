@@ -2,7 +2,14 @@ import ast
 from .utils import get_offsets, hard_split
 
 
-def chunk_nodes(nodes, start, end, src_file, line_offsets, max_size):
+def chunk_nodes(
+        nodes: list[ast.stmt],
+        start: int,
+        end: int,
+        src_file: str,
+        line_offsets: list[str],
+        max_size: int
+) -> list[tuple[str, int, int]]:
     starts = []
     for node in nodes:
         start_line = node.lineno
@@ -44,8 +51,8 @@ def chunk_nodes(nodes, start, end, src_file, line_offsets, max_size):
     return cuts
 
 
-def chunk_pfile(filename, max_size):
-    """ try to chunks a file """
+def chunk_pfile(filename: str, max_size: int) -> list[tuple[str, int, int]]:
+    """ try to chunks a python file """
     with open(filename, 'r', encoding='utf-8') as f:
         src_file = f.read()
     tree = ast.parse(src_file)
@@ -53,8 +60,3 @@ def chunk_pfile(filename, max_size):
     chunks = chunk_nodes(tree.body, 0, len(src_file),
                          src_file, line_offsets, max_size)
     return chunks
-    # assert ''.join(src_file[a:b] for a, b in chunks) == src_file
-    # res = []
-    # for chunk in chunks:
-    #    res.append(src_file[chunk[0]: chunk[1]])
-    # return res

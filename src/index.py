@@ -27,13 +27,13 @@ def git_file() -> list[str]:
     return res
 
 
-def skip_file(path):
+def skip_file(path: str) -> bool:
     """skip files in .gotignore"""
     to_skip = git_file()
     return path in to_skip
 
 
-def skip_folder(path):
+def skip_folder(path: str) -> bool:
     """skip folders ignored by git"""
     path = path.split('/')[-1]
     to_skip = git_file()
@@ -128,7 +128,7 @@ def index(
                 indent=4
             )
 
-    except (PermissionError, OSError):
+    except (OSError):
         raise ValueError("Extract Chunks probleme.")
     corpus_tokens = [
         tokenizer(t) for t in tqdm(txt, desc='Tokenizing', unit=' chunk')]
