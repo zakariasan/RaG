@@ -20,4 +20,4 @@ lint:
 
 lint-strict:
 	flake8 src
-	mypy . --strict
+	mypy src --strict

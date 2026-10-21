@@ -44,10 +44,14 @@ class StudentSearchResultsAndAnswer(BaseModel):
     k: int
 
 
-class MoulinetAnsweredQuestion:
+class MoulinetteAnsweredQuestion(BaseModel):
     question_id: str
     question: str
     answer: str
     sources: List[MinimalSource]
     difficulty: str
     is_valid: bool
+
+
+class MoulinetteDataset(BaseModel):
+    rag_questions: List[MoulinetteAnsweredQuestion]

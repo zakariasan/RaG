@@ -6,6 +6,7 @@ It is also the defense preparation: every "why" is here.
 
 What is **left to do** is not in this file — that is `task.md`.
 How to **test** each part is in `checker.md`.
+How the **LLM / answer generation** works, with reading links, is in `explaination.md`.
 
 ---
 
@@ -24,8 +25,8 @@ second one. The model stays frozen; the intelligence is in the retrieval.
 |---|---|---|
 | **Indexing** | cut every corpus file into chunks, tokenize them, build a BM25 index on disk | `index.py`, both chunkers |
 | **Retrieving** | tokenize a question, score it against the index, return the top-k chunk *locations* | `search.py` |
-| **Augmenting** | read those chunks' text back from disk, pack them into a prompt | not written yet |
-| **Generating** | Qwen3-0.6B reads that prompt, writes an answer | not written yet |
+| **Augmenting** | read those chunks' text back from disk, pack them into a prompt | not written yet — planned in `rag_flow.py`, see `explaination.md` |
+| **Generating** | Qwen3-0.6B reads that prompt, writes an answer | not written yet — planned in `rag_flow.py`, see `explaination.md` |
 
 Each stage feeds the next and only the next. The LLM never sees the corpus or the index — only
 the handful of sources retrieval already selected. That separation is the whole point of RAG:
@@ -402,6 +403,31 @@ pipeline — so those stay plain functions.
 takes an already-parsed dict. Handing a dict to `model_validate_json` gives
 `ValidationError: Invalid JSON: expected value at line 1 column 1`.
 
+## 5.1 Two extra models for the ground truth
+
+```python
+class MoulinetteAnsweredQuestion(BaseModel):
+    question_id: str
+    question: str
+    answer: str
+    sources: List[MinimalSource]
+    difficulty: str
+    is_valid: bool
+
+class MoulinetteDataset(BaseModel):
+    rag_questions: List[MoulinetteAnsweredQuestion]
+```
+
+Mirror the `AnsweredQuestions/` files exactly, extra fields included, so `evaluate` gets typed
+objects (`q.sources[0].file_path`) instead of dicts. `RagDataset` would also parse these files
+(pydantic drops the unknown fields), but the explicit model states what the scorer expects and
+would let `is_valid` filter questions if ever needed. Verified: docs 100 and code 99 rows
+parse; every row has exactly one source and `is_valid: true`.
+
+**Why the wrapper is needed.** `BaseModel` on the row class alone changes nothing about
+`json.load` output — dicts stay dicts. Pydantic only builds objects when something is *parsed
+through* a model; `MoulinetteDataset` is that entry point for the whole file.
+
 ---
 
 # 6. Measurements
@@ -495,6 +521,85 @@ and documented rather than unknown.
 
 ---
 
+# 6.7 Typing and linting clean
+
+`flake8 src` reports nothing and `mypy src` with the subject's flags reports
+**`Success: no issues found in 10 source files`**. Twenty mypy errors went to zero.
+
+**What the 20 errors actually were: two wrong annotations, not twenty bugs.**
+
+| Wrong | Right | Errors it caused |
+|---|---|---|
+| `line_offsets: list[str]` in `chunk_nodes` | `list[int]` | 21, 33, 38, 41 (×3), 44, 61 |
+| `chunk_nodes`/`chunk_pfile` `-> list[tuple[str, int, int]]` | `-> list[tuple[int, int]]` | 35, 47, 50, `index.py:77`, `index.py:79` |
+
+`get_offsets` returns `list[int]`, so annotating the parameter `list[str]` made mypy treat every
+character offset as a string — hence `str > int`, `str - str`, and wrong argument types all the
+way down. And `chunk_nodes` returns `(start, end)` **pairs**; the file path is attached later in
+`index_machine`, not in the chunker. mypy's error on line 61 was the giveaway: *"Argument 5 has
+incompatible type `list[int]`; expected `list[str]`"* — the caller was right, the signature was
+lying.
+
+**Three lessons worth keeping for the defense:**
+
+1. **mypy gives a local variable one type for the whole function.** `node` was bound by
+   `for node in nodes` as `ast.stmt`, so rebinding the same name to `ast.stmt | None` in two
+   later loops was a contradiction. Renaming them to `nd` fixed it. Three loops had simply
+   shared a name.
+2. **An empty list gets its type from the first `append`.** `starts = []` became
+   `list[tuple[int, ast.stmt]]`, which then rejected the deliberate `(start, None)` sentinel.
+   Declaring `starts: list[tuple[int, ast.stmt | None]] = []` states the intent.
+3. **`ast.stmt` is the base class and has no `.body`.** Only `FunctionDef`, `ClassDef`, `If`,
+   `For`, `While`, `Try`, `With` do. The runtime guard `getattr(node, 'body', None)` is correct,
+   but mypy cannot narrow a type from a `getattr` *test*. Keeping the value —
+   `bd = getattr(nd, 'body', None)` then `if bd:` and passing `bd` — type-checks because
+   `getattr` with a default returns `Any`. No `cast`, no `# type: ignore`.
+
+**And one about where an annotation belongs:** `tuple[list[MinimalSource], list[str]]` was first
+written on `chunk_pfile`, which caused six fresh errors. That signature belongs to
+`index_machine` — the function that actually builds `MinimalSource` objects. The test is simply:
+*what does this function return?*
+
+`Makefile` now lints `src` rather than `.`; bare `flake8 .` walks the whole vLLM corpus under
+`data/raw/` and never finishes.
+
+## 6.8 `evaluate` regression — fixed, numbers verified
+
+`evaluate` had regressed to `ERROR414: 'dict' object has no attribute 'question_id'`. Fixed in
+four steps, each run and checked:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `'dict' object has no attribute 'question_id'` | `json.load` returns dicts; annotating `list[MoulinetAnsweredQuestion]` converts nothing, and the class was not even a `BaseModel` | `MoulinetteAnsweredQuestion(BaseModel)` + `MoulinetteDataset` wrapper, file parsed through it (5.1) |
+| every recall `0.0` | `src.file_path == truth.sources[0]` compared a `str` to a `MinimalSource` — never equal | compare `truth.sources[0].file_path` |
+| `Student data is valid: False` on clean data | `len(oversized) > 0` — inverted | `len(oversized) == 0` |
+| crash on `search_result` / undefined `s` | typo + wrong comprehension variable | `search_results`, `[r for r in ...]` — **mypy flagged both before running** |
+
+Current output (labels still shifted by one leftover line, `task.md` 3.1 — the values are the
+right ones):
+
+```
+docs   valid True · 100 questions · R@1 0.540 · R@3 0.760 · R@5 0.830 · R@10 0.830
+code   valid True ·  99 questions · R@1 0.354 · R@3 0.566 · R@5 0.657 · R@10 0.657
+```
+Identical to the hand-computed values in 6.4 — the evaluator agrees with the reference.
+`flake8 src` clean, `mypy src` clean.
+
+**Lessons for the defense:**
+
+1. **A green mypy is not a correct program.** `json.load` returns `Any`, and `Any` satisfies
+   every annotation — mypy stayed silent on the dict bug. Parsing through pydantic turns `Any`
+   into real types, and then mypy *can* catch things: it found the `search_result` typo and the
+   undefined `s` immediately.
+2. **Annotations do not convert.** `x: list[Model] = json_data` is a promise to the reader, not
+   a conversion. Only `Model.model_validate[_json](...)` builds objects.
+3. **A score of exactly 0.0 is a comparison bug, not a retrieval bug.** Retrieval cannot get
+   *every* question wrong; a type mismatch in the hit test can.
+4. **Check the known values.** Having 0.540 / 0.830 and 0.354 / 0.657 as targets is what
+   exposed both the 0.0 and the shifted labels in seconds.
+
+---
+
 # 7. Bugs already fixed — the defense material
 
 Each of these was found by running or measuring, not by reading. "What went wrong?" is a
@@ -566,8 +671,11 @@ called `UnansweredQuestions` with no `.json`, which the grader cannot pair with 
 | `src/txt_file_chunker.py` | line-based `hard_split` wrapper |
 | `src/index.py` | walk + gitignore filter + chunk + tokenize + BM25 save |
 | `src/search.py` | `search` and `search_dataset` |
-| `src/models.py` | 8/8 models |
-| `src/__main__.py` | Fire with `index`, `search`, `search_dataset` |
+| `src/models.py` | 8/8 subject models + `MoulinetteAnsweredQuestion`, `MoulinetteDataset` |
+| `src/__main__.py` | Fire with `index`, `search`, `search_dataset`, `evaluate`; `except Exception` catch-all active |
+| `src/evaluate.py` | `iou`, `recalling`, `evaluate` — correct numbers + validity check; labels off by one line (`task.md` 3.1) |
+| `src/rag_flow.py` | 0 bytes — planned `Generator` class (`task.md` 5.1) |
+| `explaination.md` | how answer generation works, step by step, with reading links |
 | `Makefile` | `install run debug clean lint lint-strict` |
 | `pyproject.toml` | `bm25s`, `fire`, `pudb`, `pydantic`, `tqdm` |
 | `data/raw/vllm-0.10.1/` | corpus |
@@ -619,7 +727,7 @@ uv run python -m src search_dataset \
 Ranked best first; the same `file_path` may repeat with different ranges — one entry per chunk.
 **Budget:** 200 questions <= 90 s.
 
-## `evaluate` (to be written)
+## `evaluate` (works — labels fix pending, `task.md` 3.1)
 ```
 uv run python -m src evaluate --student_search_results_path <your output> \
                               --dataset_path <AnsweredQuestions file>
@@ -631,8 +739,9 @@ Ground truth adds `sources`, `answer`, `difficulty`, `is_valid`:
               "first_character_index": 4695, "last_character_index": 6098}],
  "difficulty": "synthetic", "is_valid": true}
 ```
-**Out:** stdout `Recall@1 / @3 / @5 / @10`. Hit = same file **and** IoU >= 0.05, matched by
-`question_id` — never by list position.
+**Out:** stdout `Student data is valid: <bool>`, question counts, then `Recall@1 / @3 / @5 /
+@10`. Hit = same file **and** IoU >= 0.05, matched by `question_id` — never by list position.
+Valid = no retrieved source longer than `--max_context_length` (2000), as the moulinette checks.
 
 ## `answer` / `answer_dataset` (to be written)
 ```
@@ -669,3 +778,6 @@ Look for `Student data is valid: True` before trusting any number.
 - Why `folder[:] = [...]` prunes the walk but `folder = [...]` does not.
 - Why indexing every non-ignored file was kept even though it costs 2 docs questions.
 - Why batching `retrieve` once beats 100 calls.
+- Why a green mypy did not catch the dict bug in `evaluate` (`json.load` → `Any`), and why
+  parsing through pydantic made mypy useful again.
+- The LLM side — see `explaination.md` §7.

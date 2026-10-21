@@ -52,8 +52,8 @@ def search(
 
 def search_dataset(
     dataset_path: str =
-    'data/datasets_public/Public/UnansweredQuestions/dataset_docs_public.json',
-    k: int = 5,
+    'data/datasets_public/public/UnansweredQuestions/dataset_docs_public.json',
+    k: int = 10,
     save_directory: str = 'data/output/search_results/UnansweredQuestions',
     save_processed: str = 'data/processed',
     saved_file: str = 'chunks.json'
