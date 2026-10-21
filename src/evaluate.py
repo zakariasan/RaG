@@ -22,9 +22,10 @@ def recalling(
     truth = {q.question_id: q for q in g_checker.rag_questions}
     if len(truth) == 0:
         raise ValueError("SOmthing wrong with the dataset to check")
+    # print(questions)
     for question in questions.search_results:
         for src in question.retrieved_sources[:k]:
-            elem = truth[src.question_id]
+            elem = truth[question.question_id]
             if src.file_path == elem.sources[0].file_path and\
                     iou(src.first_character_index,
                         src.last_character_index,
@@ -48,11 +49,10 @@ def evaluate(
     """Check your answer protocol"""
     try:
         questions = StudentSearchResults.model_validate_json(
-            search_results=ft_open(
-                student_search_results_path)['search_results'],
-            k=k)
+            ft_open(
+                student_search_results_path))
         g_checker = MoulinetteDataset.model_validate_json(
-            rag_questions=ft_open(dataset_path)['rag_questions']
+            ft_open(dataset_path)
         )
         oversized = [s for r in questions.search_results
                      for s in r.retrieved_sources
@@ -68,7 +68,7 @@ def evaluate(
         print("Evaluation Results \n ========================================")
         for kk in (1, 3, 5, 10):
             out = recalling(questions, g_checker, kk)
-            print(f"Reacll@{kk}: {out:3f}")
+            print(f"Reacll@{kk}: {out:.2f}")
 
     except (OSError) as e:
         print(e)
