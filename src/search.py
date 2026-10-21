@@ -12,7 +12,7 @@ from .models import (
     StudentSearchResults
 )
 
-# from .utils import ft_open
+from .utils import ft_open
 
 
 def search(
@@ -27,6 +27,8 @@ def search(
     """
     if k <= 0:
         raise ValueError('K must be positive.')
+    if len(query) < 3:
+        raise ValueError('Good query can help us do the work.')
     try:
         with open(
             os.path.join(save_directory, load_dir),
@@ -46,7 +48,7 @@ def search(
                 f"{c['file_path']} "
                 +
                 f"[{c['first_character_index']}:{c['last_character_index']}]")
-    except (OSError, FileNotFoundError, PermissionError):
+    except (OSError):
         raise ValueError('Index file not Found.')
 
 
@@ -61,20 +63,9 @@ def search_dataset(
     """search from the input datasets"""
 
     try:
-        with open(
-            dataset_path,
-            encoding='utf-8'
-        ) as f:
-            questions = f.read()
 
-        ds = RagDataset.model_validate_json(questions)
-
-        with open(
-            os.path.join(save_processed, saved_file),
-            encoding='utf-8'
-        ) as f:
-            chunks = json.load(f)
-
+        ds = RagDataset.model_validate_json(ft_open(dataset_path))
+        chunks = ft_open(os.path.join(save_processed, saved_file))
         all_tokens = [tokenizer(q.question) for q in ds.rag_questions]
         retriever = bm25s.BM25.load(save_processed)
         res, _scores = retriever.retrieve(all_tokens, k=k)
@@ -97,6 +88,6 @@ def search_dataset(
 
         with open(path, 'w', encoding='utf-8') as f:
             f.write(out.model_dump_json(indent=4))
-    except (OSError, PermissionError, FileNotFoundError) as e:
+    except (OSError) as e:
         raise ValueError(f"Erro form serach dataset: {e}")
     print(f'Saved student_search_results to {path}')

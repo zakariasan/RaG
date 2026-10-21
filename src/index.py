@@ -16,12 +16,13 @@ def git_file() -> list[str]:
     """ Scrape Every git file to igonore it"""
     try:
         tmp = ft_open('./.gitignore')
-    except (FileNotFoundError):
+    except (OSError):
         return []
     res = []
     for item in tmp.splitlines():
-        if not item.strip().startswith('#'):
-            res.append(item.strip())
+        if item.strip().startswith('#') or len(item) == 0:
+            continue
+        res.append(item.strip())
     res.append('.git')
     res.append('.gitignore')
     return res

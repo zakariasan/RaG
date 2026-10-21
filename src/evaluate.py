@@ -1,5 +1,5 @@
-import json
 from .models import (StudentSearchResults, MoulinetteDataset)
+from .utils import ft_open
 
 # from tqdm import tqdm
 
@@ -18,21 +18,18 @@ def recalling(
 ) -> float:
     """Calculate the recall@k one time"""
     hits = 0
+
+    truth = {q.question_id: q for q in g_checker.rag_questions}
+    if len(truth) == 0:
+        raise ValueError("SOmthing wrong with the dataset to check")
     for question in questions.search_results:
-        # truth = g_checker.rag_questions[f'{question.question_id}']
-        truth = next((
-            q for q in g_checker.rag_questions
-            if q.question_id == question.question_id),
-                     None
-                     )
-        if truth is None:
-            continue
         for src in question.retrieved_sources[:k]:
-            if src.file_path == truth.sources[0].file_path and\
+            elem = truth[src.question_id]
+            if src.file_path == elem.sources[0].file_path and\
                     iou(src.first_character_index,
                         src.last_character_index,
-                        truth.sources[0].first_character_index,
-                        truth.sources[0].last_character_index) >= 0.05:
+                        elem.sources[0].first_character_index,
+                        elem.sources[0].last_character_index) >= 0.05:
                 hits += 1
                 break
     recall = hits / len(questions.search_results)
@@ -50,16 +47,12 @@ def evaluate(
 ) -> None:
     """Check your answer protocol"""
     try:
-        with open(student_search_results_path, encoding='utf-8') as f:
-            questions = json.load(f)
-        with open(dataset_path, encoding='utf-8') as f:
-            ground_checker = json.load(f)
-
-        questions = StudentSearchResults(
-            search_results=questions['search_results'],
+        questions = StudentSearchResults.model_validate_json(
+            search_results=ft_open(
+                student_search_results_path)['search_results'],
             k=k)
-        g_checker = MoulinetteDataset(
-            rag_questions=ground_checker['rag_questions']
+        g_checker = MoulinetteDataset.model_validate_json(
+            rag_questions=ft_open(dataset_path)['rag_questions']
         )
         oversized = [s for r in questions.search_results
                      for s in r.retrieved_sources
@@ -75,8 +68,7 @@ def evaluate(
         print("Evaluation Results \n ========================================")
         for kk in (1, 3, 5, 10):
             out = recalling(questions, g_checker, kk)
-            kk += 2 if kk < 5 else 5
-            print(f"racll@{kk}: {out}")
+            print(f"Reacll@{kk}: {out:3f}")
 
-    except (OSError, PermissionError, FileNotFoundError) as e:
+    except (OSError) as e:
         print(e)
