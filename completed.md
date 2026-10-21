@@ -467,7 +467,24 @@ first, but 83% have it somewhere in the top 5. BM25 ranks by lexical overlap, wh
 signal; retrieving 5 and letting the LLM read all of them is what converts a mediocre ranker
 into a usable system.
 
-## 6.5 A deliberate decision, recorded
+## 6.5 `evaluate` verified against both datasets
+
+Our own `evaluate` reproduces the hand-computed values exactly:
+
+```
+docs   Recall@1 0.540 · @3 0.760 · @5 0.830 · @10 0.830
+code   Recall@1 0.354 · @3 0.566 · @5 0.657 · @10 0.657
+```
+
+`@10 == @5` because the output files hold 5 sources per row — not a bug, just the ceiling of
+what is in the file. (Regenerating with `--k 10` makes @10 meaningful; see `task.md` 3.5.2.)
+
+**Why the climb from @1 to @5 is the point of k.** Only 54% of docs questions put the right
+chunk first, but 83% have it somewhere in the top 5. BM25 ranks by lexical overlap, a coarse
+signal. Retrieving 5 and letting the LLM read all of them is what turns a mediocre ranker into
+a usable system.
+
+## 6.6 A deliberate decision, recorded
 
 Indexing **every** non-ignored file — `.json`, `.cu`, `.cuh`, `.h`, `.cpp` included — rather
 than filtering to `.py/.md/.rst/.txt` costs 2 docs questions (0.850 -> 0.830) and leaves a

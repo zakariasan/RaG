@@ -52,7 +52,7 @@ def is_ignored(name: str, patterns: list[str]) -> bool:
 def index_machine(
     main_path: str,
     max_size: int
-) -> tuple[list[tuple[str, int, int]], list[str]]:
+) -> tuple[list[MinimalSource], list[str]]:
     """machine that check if file can chunk it or no"""
 
     chunk_meta = []

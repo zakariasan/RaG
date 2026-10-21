@@ -25,8 +25,8 @@ Legend: `[ ]` not started · `[~]` partial · **BLOCKER** = nothing after it can
 
 Retrieval **verified end to end** on both public datasets: docs R@5 **0.830** (need 0.80),
 code R@5 **0.657** (need 0.50). `index`, `search`, `search_dataset` and the 8 models are done.
-Missing: `evaluate`, the moulinette check, answer generation, a real Markdown strategy,
-lint/typing, README.
+`evaluate` works too, reproducing both scores exactly. Missing: the moulinette check, answer
+generation, a real Markdown strategy, lint/typing, README.
 
 ---
 
@@ -87,36 +87,176 @@ malformed dataset file instead of a pydantic traceback.
 
 ---
 
-# 3. `evaluate` — not started, build it next
+# 3. `evaluate` — WORKS, see `completed.md` section 6.6
 
-**In:** `--student_search_results_path`, `--dataset_path` (the `AnsweredQuestions` twin).
-**Out:** stdout only — `Recall@1 / @3 / @5 / @10`.
+Verified against both datasets, reproducing the known-correct values exactly:
 
-**Algorithm:** index the ground truth by `question_id` into a dict, then match **by id, never by
-list position**. For each of your rows, take the first `k` sources in rank order and count a hit
-when `file_path` matches **and** IoU >= 0.05. Hits divided by question count.
-```python
-def iou(a, b, c, d):
-    inter = max(0, min(b, d) - max(a, c))
-    union = max(b, d) - min(a, c)
-    return inter / union if union else 0.0
 ```
-**Why it is the next thing to build:** it is the feedback loop. Without it, every later change
-to chunk size, the file filter or the tokenizer is a guess. The moulinette is the official
-scorer but too slow and too coarse to iterate against.
-**Accept when:** it reproduces docs ~0.83 / code ~0.66 at `max_chunk_size 2000`.
-**Then register it** in `__main__.py`.
+docs   Recall@1 0.540 · @3 0.760 · @5 0.830
+code   Recall@1 0.354 · @3 0.566 · @5 0.657
+```
+
+Polish still open, listed in section 3.5 below.
+
+---
+
+# 3.5 Fix all of this BEFORE running the moulinette
+
+Nothing here changes a score. All of it changes whether the moulinette accepts the output and
+whether `make lint` passes. Cheaper to fix now than after the answer stage is written.
+
+## 3.5.1 Dataset paths moved — two defaults are now dead
+
+The datasets are at **`data/datasets_public/public/`**, not `data/datasets/`:
+```
+data/datasets_public/public/AnsweredQuestions/dataset_{docs,code}_public.json
+data/datasets_public/public/UnansweredQuestions/dataset_{docs,code}_public.json
+```
+`evaluate` already points at the new location. **`search_dataset` does not** — its
+`dataset_path` default is still `data/datasets/UnansweredQuestions/dataset_docs_public.json`,
+which no longer exists, so the next run fails with `FileNotFoundError`. Fix the default.
+
+## 3.5.2 Regenerate both outputs with `--k 10`
+
+Subject line 507 uses `--k 10` in its own `search_dataset` example, and line 553 says the
+moulinette *"reports recall at several values of k"* — it reports from **your file**, it does
+not retrieve anything itself. Your files hold 5 sources per row, so the moulinette's @10 is
+capped at your @5 and you would be reporting a @10 that is not real.
+
+Costs nothing: BM25 ranking is deterministic, so the top 5 of a top-10 run is identical to a
+top-5 run. The thresholds are **@5** (docs 0.80, code 0.50) and they do not move.
+
+**Do:** change `search_dataset`'s default `k` to 10, regenerate both files, re-run `evaluate`.
+R@5 must still read 0.830 and 0.657 — if it moves, something else broke.
+
+## 3.5.3 `max_context_length` — use it as the validity check
+
+It is **not** a retrieval parameter. Subject line 222: *"the moulinette rejects any retrieved
+source longer than 2000 characters (its max_context_length), and a single over-long source
+makes your whole output invalid."* Currently unused in `evaluate`. Make it mirror the
+moulinette so you catch the fatal case before handing the file over:
+```python
+oversized = [s for r in questions.search_results
+             for s in r.retrieved_sources
+             if s.last_character_index - s.first_character_index > max_context_length]
+print(f"Student data is valid: {not oversized}")
+```
+Measured state: max span exactly 2000, **0 chunks over budget**, so this must print `True`.
+
+## 3.5.4 mypy — 20 errors from 2 wrong annotations
+
+`src/python_file_chunker.py` is fine; its annotations are not. Two lies cascade:
+
+| Line | Wrong | Right | Fixes |
+|---|---|---|---|
+| 10 | `line_offsets: list[str]` | `list[int]` | 21, 33, 38, 41, 44 |
+| 12, 54 | `-> list[tuple[str, int, int]]` | `-> list[tuple[int, int]]` | 35, 41, 47, 50, `index.py:77`, `index.py:79` |
+
+`get_offsets` returns `list[int]`, so annotating it `list[str]` makes mypy treat every offset as
+a string — hence `str > int`, `str - str`, and wrong argument types everywhere. And
+`chunk_nodes` returns `(start, end)` **pairs**; the file path is attached later in
+`index_machine`, not here.
+
+**Then declare the containers**, because mypy locks in the type of the first `append`:
+```python
+starts: list[tuple[int, ast.stmt | None]] = []     # fixes lines 22, 23 (the None sentinel)
+pairs: list[tuple[int, int, ast.stmt | None]] = []
+cuts: list[tuple[int, int]] = []
+curr: tuple[int, int] | None = None
+```
+
+**`node.body` (line 38), `"stmt" has no attribute "body"`** — real, not a mistake. `ast.stmt`
+is the base class; only `FunctionDef`, `ClassDef`, `If` and friends have `.body`. mypy cannot
+narrow from a `getattr` test, so keep the value instead of testing and re-reading it:
+```python
+body = getattr(node, 'body', None)
+if body:
+    cuts.extend(chunk_nodes(body, s, e, src_file, line_offsets, max_size))
+```
+`getattr` with a default returns `Any`, so it type-checks with no `cast` and no
+`# type: ignore`. The `node is not None` test becomes redundant — `None` has no `.body`.
+
+**`src/index.py:91` and `:126`** — `index_machine` returns `MinimalSource` objects, not tuples:
+```python
+) -> tuple[list[MinimalSource], list[str]]:
+```
+`:126` (`item.model_dump()`) only errored because mypy believed the list held plain tuples.
+
+**`src/txt_file_chunker.py:4`** — no signature at all:
+```python
+def chunk_txt_file(filename: str, max_size: int) -> list[tuple[int, int]]:
+```
+
+**`src/evaluate.py` — `"UnansweredQuestion" has no attribute "sources"`** is mypy catching
+something true: `RagDataset.rag_questions` is `List[AnsweredQuestion | UnansweredQuestion]` and
+only the answered variant has `sources`. Filter while building the lookup:
+```python
+gt = {q.question_id: q for q in g_checker.rag_questions
+      if isinstance(q, AnsweredQuestion)}
+```
+Correct behaviour too — a ground-truth row with no `sources` cannot be scored.
+
+**Still missing annotations:** `iou`'s four params and return · `recalling`'s return ·
+`evaluate`'s return (`-> None`) · `search_dataset`'s `save_processed` and `saved_file` ·
+`index.py:30` `skip_file` and `:36` `skip_folder` (both being deleted anyway, see 6.1).
+
+## 3.5.5 flake8 — 7 findings in our own code
+
+```
+src/__init__.py:1:1   W391 blank line at end of file
+src/evaluate.py:4:1   F401 'tqdm.tqdm' imported but unused
+src/evaluate.py:48:80 E501 line too long (89 > 79)
+src/evaluate.py:59:1  W391 blank line at end of file
+src/search.py:15:1    F401 '.utils.ft_open' imported but unused
+src/search.py:31:80   E501 line too long (84 > 79)
+src/search.py:51:80   E501 line too long (99 > 79)
+```
+`tqdm` in `evaluate.py` — either wrap the loop in it or drop the import. `ft_open` in
+`search.py` is unused because `search_dataset` reads with `open(...).read()`; use `ft_open`
+there instead and the import earns its place.
+
+## 3.5.6 flake8 has no exclude — `make lint` is unusable
+
+`flake8 .` walks **`data/raw/vllm-0.10.1/`** — the entire vLLM source tree. It ran past 120
+seconds and had to be killed. There is no `.flake8`, `setup.cfg` or `tox.ini` in the repo, so
+the linter has no idea what to skip.
+
+Add a `.flake8` (or `[flake8]` in `setup.cfg`):
+```ini
+[flake8]
+exclude = .git,__pycache__,.venv,data,build,dist
+max-line-length = 79
+```
+Without it `make lint` never finishes, which is a problem the moulinette may well hit.
+
+## 3.5.7 `evaluate` cosmetics
+
+- `racll@` typo in the print — should read `Recall@`.
+- The `Evaluation Results ===...` header prints **after** the numbers; move it above the loop.
+- `except (OSError, PermissionError, FileNotFoundError)` — the last two are subclasses of
+  `OSError`, so just `OSError`. It prints the error and then **falls through** to the header;
+  `raise ValueError(...)` or `return`.
+- Line 48 rebuilds the model with the CLI `k`, overwriting the file's own `k`. Use
+  `StudentSearchResults.model_validate_json(f.read())`.
+- The `gt` dict is rebuilt on all 4 calls to `recalling` — build it once in `evaluate` and pass
+  it in.
+
+## 3.5.8 Still open from step 0
+
+**`__main__.py:14-15`** — the `except Exception` catch-all is still commented out, so every bug
+prints a full traceback. Subject line 464: the CLI *"must never crash with an unhandled
+traceback"*, and it is tested with edge cases.
 
 ---
 
 # 4. Validate against the moulinette — not started
 
-The executable is **not in the repo** — get it from the subject attachments, rename
-`moulinette-ubuntu` / `moulinette-fedora` to `moulinette`, `chmod +x`.
+**Do section 3.5 first.** The executable is **not in the repo** — get it from the subject
+attachments, rename `moulinette-ubuntu` / `moulinette-fedora` to `moulinette`, `chmod +x`.
 ```sh
 ./moulinette evaluate_student_search_results \
   data/output/search_results/UnansweredQuestions/dataset_docs_public.json \
-  data/datasets/AnsweredQuestions/dataset_docs_public.json \
+  data/datasets_public/public/AnsweredQuestions/dataset_docs_public.json \
   --k 10 --max_context_length 2000
 ```
 **Look for `Student data is valid: True` before trusting any number.** Do this **before**
@@ -264,16 +404,18 @@ stays there, and a later `git rm` does not shrink the repo. Verify with
 
 # Order of work
 
-1. **0.1** uncomment the catch-all. *One line.*
-2. **3** `evaluate`. *The feedback loop — everything after this becomes measurable instead of
+1. **3.5** the whole pre-moulinette list: dead dataset paths, `--k 10` regeneration,
+   `max_context_length` as the validity check, 20 mypy errors from 2 wrong annotations, 7 flake8
+   findings, the missing flake8 exclude, the catch-all. *All of it is cheap now and blocks or
+   distorts the moulinette run.* *The feedback loop — everything after this becomes measurable instead of
    guessed.*
-3. **4** moulinette, until `Student data is valid: True`. *Catches format errors our own
+2. **4** moulinette, until `Student data is valid: True`. *Catches format errors our own
    evaluator cannot see, e.g. a renamed output file.*
-4. **5** answer generation. *Biggest remaining piece, and it depends on the output format from
+3. **5** answer generation. *Biggest remaining piece, and it depends on the output format from
    step 1.*
-5. **1.1** Markdown chunker, then re-run `evaluate` on docs. *Keep it only if the number goes
+4. **1.1** Markdown chunker, then re-run `evaluate` on docs. *Keep it only if the number goes
    up.*
-6. **6** dead code, type hints, lint clean.
-7. **7, 8** Makefile fixes and the README's 10 sections.
-8. **9** tests.
-9. **11** bonus.
+5. **6** dead code, remaining type hints, lint clean.
+6. **7, 8** Makefile fixes and the README's 10 sections.
+7. **9** tests.
+8. **11** bonus.

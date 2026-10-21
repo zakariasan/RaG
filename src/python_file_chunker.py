@@ -7,10 +7,10 @@ def chunk_nodes(
         start: int,
         end: int,
         src_file: str,
-        line_offsets: list[str],
+        line_offsets: list[int],
         max_size: int
-) -> list[tuple[str, int, int]]:
-    starts = []
+) -> list[tuple[int, int]]:
+    starts: list[tuple[int, ast.stmt | None]] = []
     for node in nodes:
         start_line = node.lineno
         decorators = getattr(node, 'decorator_list', [])
@@ -22,20 +22,21 @@ def chunk_nodes(
         starts.insert(0, (start, None))
     starts.append((end, None))
 
-    pairs = []
-    for (s, node), (e, _) in zip(starts, starts[1:]):
+    pairs: list[tuple[int, int, ast.stmt | None]] = []
+    for (s, decorators), (e, _) in zip(starts, starts[1:]):
         if s < e:
-            pairs.append((s, e, node))
+            pairs.append((s, e, decorators))
 
-    cuts = []
-    curr = None
-    for (s, e, node) in pairs:
+    cuts: list[tuple[int, int]] = []
+    curr: tuple[int, int] | None = None
+    for (s, e, decorators) in pairs:
         if e - s > max_size:
             if curr:
                 cuts.append(curr)
                 curr = None
-            if node is not None and getattr(node, 'body', None):
-                cuts.extend(chunk_nodes(node.body, s, e,
+            bd = getattr(decorators, 'body', None)
+            if bd:
+                cuts.extend(chunk_nodes(bd, s, e,
                                         src_file, line_offsets, max_size))
             else:
                 cuts.extend(hard_split(s, e, line_offsets, max_size))
@@ -51,7 +52,7 @@ def chunk_nodes(
     return cuts
 
 
-def chunk_pfile(filename: str, max_size: int) -> list[tuple[str, int, int]]:
+def chunk_pfile(filename: str, max_size: int) -> list[tuple[int, int]]:
     """ try to chunks a python file """
     with open(filename, 'r', encoding='utf-8') as f:
         src_file = f.read()
