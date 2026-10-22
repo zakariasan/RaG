@@ -11,5 +11,7 @@ dependencies = [
     "mypy>=2.4.0",
     "pudb>=2025.1.5",
     "pydantic>=2.14.1",
+    "torch>=2.14.1",
     "tqdm>=4.70.1",
+    "transformers>=5.20.2",
 ]

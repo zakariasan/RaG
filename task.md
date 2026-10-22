@@ -1,7 +1,7 @@
 # task.md — what is left to do
 
-**Next task:** finish `evaluate` — **one line** left (section 3), then the pre-moulinette list
-(3.5), the moulinette (4), then answer generation (5, explained in `explaination.md`).
+**Next task:** fix `src/augmentation.py` (list **A** below), print the prompt for the LoRA
+question, then load Qwen (5.4+). Moulinette (4) postponed — do it before the defense.
 
 Remaining work only, for every part of the project. How the system works and what is already
 done live in `completed.md`. Shell tests per part live in `checker.md`. How the LLM part works,
@@ -11,13 +11,72 @@ Legend: `[ ]` not started · `[~]` partial · **BLOCKER** = nothing after it can
 
 ---
 
+# Working rules
+
+- **I write all code.** Claude only reviews, explains and runs checks when asked — never edits
+  `src/`.
+- Before asking for a review, run the self-check below. Fix what it reports first.
+- Known-good numbers are the test: any change to indexing/search must keep docs R@5 **0.830**
+  and code R@5 **0.657**.
+
+## Self-check — run all four, in order
+
+```sh
+uv run flake8 src                      # style + undefined names + syntax errors
+make lint                              # flake8 + mypy with the subject flags (types)
+uv run python -m src evaluate          # docs: 0.540 / 0.760 / 0.830 / 0.880, valid True
+uv run python -m src evaluate \
+  --student_search_results_path data/output/search_results/UnansweredQuestions/dataset_code_public.json \
+  --dataset_path data/datasets_public/public/AnsweredQuestions/dataset_code_public.json
+                                       # code: 0.354 / 0.566 / 0.657 / ?, valid True
+```
+
+Prompt check (once list A is fixed — no model needed):
+```sh
+uv run python -c "
+from src.search import search
+from src.augmentation import Augmentation
+q = 'What HTTP endpoint is used to dynamically load a LoRA adapter in vLLM?'
+a = Augmentation()
+a.read_sources(search(q, k=5), q)
+for m in a.build_prompt():
+    print('=====', m['role']); print(m['content'])
+"
+```
+**Accept when:** two blocks (`system`, `user`), sources numbered `[1]..[5]` with their path,
+the real chunk text under each, `Question: ...` last, and `/v1/load_lora_adapter` visible
+somewhere in the text.
+
+---
+
+# A. Current fix list — `src/augmentation.py` (checked 2026-10-22)
+
+`search()` is fixed (`MinimalSource(**c)` — returns real objects now). `evaluate` is fixed.
+What `flake8` / runtime report on `augmentation.py` today:
+
+| # | Line | Error | Why | Fix |
+|---|---|---|---|---|
+| A1 | 4 | `ModuleNotFoundError: No module named 'src.model'` (at import) | file is `models.py` | `from .models import MinimalSource` |
+| A2 | 2 | `F401 '.search.search' imported but unused` | `read_sources` takes sources now — correct, so the import is dead | delete the line |
+| A3 | 22 | `F821 undefined name 'query'` | `read_sources` has no `query` parameter | add `question: str` parameter, or store it and use it in `build_prompt` |
+| A4 | 29-30 | `F541 f-string is missing placeholders` (29) **and** line 30 prints a literal `{self._context}` | the `f` is on the wrong line | remove `f` from 29, add it to 30 |
+| A5 | 34 | `W391 blank line at end of file` | trailing empty line | delete it |
+| A6 | 27 | — (silent) | no space after `codebase.` → `codebase.Use` | `'... codebase. '` |
+| A7 | 7 | — | typo `Augmentaion` | `Augmentation` |
+| A8 | 16 | — | `enumerate(sources)` starts at 0 → `file[0]` | `enumerate(sources, 1)`, label `[1] path` |
+| A9 | 24-33 | — | one string with `SYSTEM:` / `USER:` labels — Qwen sees them as plain text, not roles | return `list[dict[str, str]]`: `[{"role": "system", ...}, {"role": "user", ...}]` |
+| A10 | 15-20 | — (speed) | same file re-read per chunk (`lora.md` twice in the LoRA example) | `cache: dict[str, str]` — read each path once |
+
+Order: A1-A5 (errors) → `make lint` clean → A6-A10 → prompt check above.
+
+---
+
 # Status in one line
 
 Retrieval **verified end to end**: docs R@5 **0.830** (need 0.80), code R@5 **0.657** (need
-0.50). `index`, `search`, `search_dataset`, the models, and a clean `flake8 src` + `mypy src`
-are done. **`evaluate` runs again and computes the right numbers, but prints them under the
-wrong labels** — section 3, one line. Then: 3.5 list, moulinette, answer generation, Markdown
-strategy, dead code, README.
+0.50). `index`, `search`, `search_dataset`, `evaluate`, the models are done. docs search file
+regenerated at `k=10` (R@10 **0.880**). **Now: augmentation (list A), then generation.**
+Then: moulinette, Markdown strategy, dead code, README.
 
 ---
 
@@ -71,43 +130,25 @@ in `search.py` for exactly this.
 
 ---
 
-# 3. `evaluate` — `[~]` one line left
+# 3. `evaluate` — `[x]` works, polish later
 
-The regression is fixed (see `completed.md` 6.8): ground truth parses into `MoulinetteDataset`,
-the file-path comparison is correct, the validity check is in. Current output, both datasets:
-
+Output verified 2026-10-22, correct labels, 3 decimals:
 ```
-docs   racll@3: 0.54   racll@5: 0.76   racll@10: 0.83   racll@15: 0.83
-code   racll@3: 0.354  racll@5: 0.566  racll@10: 0.657  racll@15: 0.657
-```
-**The numbers are the right ones — under the wrong labels.** 0.54 is @1, not @3.
-
-## 3.1 `[ ]` Delete the leftover increment — `evaluate.py:78`
-
-```python
-        for kk in (1, 3, 5, 10):
-            out = recalling(questions, g_checker, kk)
-            kk += 2 if kk < 5 else 5          # <- leftover from the old counter loop
-            print(f"racll@{kk}: {out}")
-```
-The `for` already gives the right `kk`; this line bumps it after computing and before printing.
-Delete it. **Accept when** the output reads exactly:
-```
-docs   Recall@1 0.540 · @3 0.760 · @5 0.830
-code   Recall@1 0.354 · @3 0.566 · @5 0.657
+docs   R@1 0.540   R@3 0.760   R@5 0.830   R@10 0.880   valid True  100 q
+code   R@1 0.354   R@3 0.566   R@5 0.657   R@10 0.657   valid True   99 q
 ```
 
-## 3.2 `[ ]` Leftovers in the same function (no score change)
+## 3.2 `[ ]` Polish (no score change) — "make it perfect later"
 
-- `racll` → `Recall`, and format `{out:.3f}` (code prints `0.35353535…` today).
-- `next(...)` in `recalling` scans all ~100 ground-truth rows per question. A dict
-  `{q.question_id: q for q in g_checker.rag_questions}` built once in `evaluate` is O(1) per
-  lookup and simpler — pass the dict to `recalling`.
-- `json.load` + `MoulinetteDataset(rag_questions=...)` works; `MoulinetteDataset.model_validate_json(f.read())`
-  does the same in one step (same for `StudentSearchResults`, which also keeps the file's own `k`).
-- `except (OSError, PermissionError, FileNotFoundError)` → `except OSError` (the other two are
-  subclasses). Add `ValidationError` for a malformed file.
-- Header `"Evaluation Results \n ===="` has a stray space at the start of the second line.
+- `recalling(..., truth)` — `truth` has no type → `make lint` fails with `no-untyped-def`.
+  Annotate `dict[str, MoulinetteAnsweredQuestion]` (import it).
+- `g_checker` parameter of `recalling` is now unused — drop it.
+- `truth[question.question_id]` → `.get()` + `continue` on `None` (no `KeyError` on unknown id).
+- Catch `pydantic.ValidationError` next to `OSError` (import it).
+- Delete `# print(questions)`, `# from tqdm import tqdm`; typo `SOmthing`; `iou` docstring
+  ("march of hard chunk…" → "Intersection over Union of two character ranges").
+- Header `"Evaluation Results \n ===="` — stray space before `====`.
+- **Code search file is still `k=5`** — regenerate with `--k 10` (3.5.2), then R@10 for code is real.
 
 ---
 
@@ -115,7 +156,7 @@ code   Recall@1 0.354 · @3 0.566 · @5 0.657
 
 Nothing here changes a score. All of it changes whether the moulinette accepts the output.
 
-## 3.5.1 `search_dataset` default path has the wrong case
+## 3.5.1 `[x]` `search_dataset` default path case — fixed (`public`)
 
 ```python
     'data/datasets_public/Public/UnansweredQuestions/dataset_docs_public.json',
@@ -123,7 +164,7 @@ Nothing here changes a score. All of it changes whether the moulinette accepts t
 The directory is **`public`**, lowercase. Linux filesystems are case-sensitive, so this is a
 `FileNotFoundError` on the next run. `evaluate` has it right; `search_dataset` does not.
 
-## 3.5.2 Regenerate both outputs with `--k 10`
+## 3.5.2 `[~]` `--k 10` — default changed, docs regenerated (k=10); **code file still k=5**
 
 `search_dataset` still defaults to `k: int = 5`. Subject line 507 uses `--k 10` in its own
 example, and line 553 says the moulinette *"reports recall at several values of k"* — it reports
@@ -143,7 +184,7 @@ characters), plus the question counts, mirroring the moulinette's header.
 
 ## 3.5.4 `[ ]` `evaluate` cosmetics — moved to 3.2
 
-## 3.5.5 `lint-strict` still points at `.`
+## 3.5.5 `[x]` `lint-strict` now runs `mypy src --strict` — fixed
 
 ```make
 lint-strict:
@@ -153,7 +194,7 @@ lint-strict:
 `mypy .` walks `data/raw/vllm-0.10.1/` — the whole vLLM source tree. Make it `mypy src --strict`.
 `lint` is already correct (`flake8 src` / `mypy src`).
 
-## 3.5.6 No flake8 config
+## 3.5.6 `[ ]` No flake8 config
 
 There is no `.flake8`, `setup.cfg` or `tox.ini`. `flake8 src` works because the Makefile names
 the directory, but bare `flake8 .` walks the corpus and never finishes (it blew past 120 s).
@@ -190,25 +231,53 @@ question, the class design, the speed table, links.
 Budget real time: ~1.2 GB weights download on first run, then roughly 5–20 s per question on
 this CPU (no GPU, 19 GB RAM) → 10–30 min per 100-question dataset.
 
-Home for the code: **`src/rag_flow.py`** (today a 0-byte file).
+Two files, two stages (`rag_flow.py` deleted):
+- **`src/augmentation.py`** — sources → prompt messages. No model. `[~]` in progress, list A.
+- **`src/generation.py`** (to create) — messages → answer. Holds Qwen.
 
-**5.0 `[ ]` Dependencies.** `uv add transformers torch`. Prefer the CPU-only torch index (see
-`explaination.md` §1) — the default Linux wheel pulls GBs of CUDA this machine cannot use.
-**Accept when:** `uv run python -c "import torch, transformers; print(torch.__version__)"` works.
+**5.0 `[x]` Dependencies.** `torch 2.14.1` + `transformers 5.20.2` in `pyproject.toml`, import
+works. Note: the installed torch is the **CUDA build** (`+cu130`, `.venv` 5.7 GB, NVIDIA libs)
+on a machine with no GPU — works, but optional switch to the CPU index
+(`explaination.md` §1) makes `uv sync` far lighter for the reviewer.
+Qwen weights **not downloaded yet** (`~/.cache/huggingface/hub` absent) — first
+`from_pretrained` pulls ~1.2 GB; do it on a good connection.
 
-**5.1 `[ ]` `Generator` class in `rag_flow.py`.**
+**About `llm_sdk`** (deleted from the repo): it only offers `encode`/`decode`/
+`get_logits_from_input_ids` — no `generate()`, no chat template, no KV cache. A token loop on
+top of it re-runs the whole prompt per token (~100-200× more work than `generate`). Decision:
+reuse its **loading** logic (device pick, dtype, `eval()`, no grad), generate with
+`transformers` directly. Be ready to say this at the defense.
 
-| Method | Does | Notes |
-|---|---|---|
-| `__init__(model_name='Qwen/Qwen3-0.6B')` | load tokenizer + model **once** | never inside a loop |
-| `read_sources(srcs)` | `ft_open(path)[first:last]` per source | cache the file text if one file repeats |
-| `build_prompt(question, texts)` | messages list: system rules, numbered sources with path, question last | see 5.3 |
-| `answer(question, srcs) -> str` | template → tokenize → generate → decode new tokens only | see 5.4 |
+**5.1 `[~]` `Augmentation` class — `src/augmentation.py`.** See list **A** at the top.
 
-Plain class, not pydantic (subject V.4: service classes are exempt).
+| Method | Does |
+|---|---|
+| `__init__()` | settings only (later: tokenizer for the budget) — no per-question state needed |
+| `read_sources(sources: list[MinimalSource], question: str)` | `ft_open(path)[first:last]` per source, numbered `[1] path`, cached per file |
+| `build_prompt() -> list[dict[str, str]]` | `[{"role": "system", "content": RULES}, {"role": "user", "content": sources + "Question: ..."}]` |
 
-**5.2 `[ ]` First milestone — print the prompt, no model.** Run `build_prompt` on the LoRA
-question and read it: right text? paths present? question last? Only then load Qwen.
+Sources come **from the caller**: `search(q)` for `answer`, `row.retrieved_sources` for
+`answer_dataset`. That is why `read_sources` must not call `search` itself.
+
+**5.2 `[ ]` First milestone — print the prompt, no model.** Use the "Prompt check" command in
+the Working rules section. Only then load Qwen.
+
+**5.2b `[ ]` `Generator` class — `src/generation.py`.**
+
+| Method | Does |
+|---|---|
+| `__init__(model_name='Qwen/Qwen3-0.6B')` | load tokenizer + model **once**, `model.eval()` |
+| `generate(messages) -> str` | `apply_chat_template(..., enable_thinking=False)` → tokenize → `generate` in `torch.inference_mode()` → decode new tokens only |
+
+Test alone first:
+```sh
+uv run python -c "
+from src.generation import Generator
+g = Generator()
+print(g.generate([{'role': 'user', 'content': 'Say hello in 5 words.'}]))
+"
+```
+Accept when: a short sentence, no `<think>`, no echoed prompt. Note the time it takes.
 
 **5.3 `[ ]` Prompt shape.**
 - System: answer **only** from the provided sources; say so if they do not contain the answer;
@@ -227,7 +296,7 @@ question and read it: right text? paths present? question last? Only then load Q
 sources. Over budget → **drop the lowest-ranked source whole**, repeat. Never truncate mid-source.
 Start with top 5 (R@5 = 0.830 already); try 3 vs 5 and keep the faster one if answers hold.
 
-**5.6 `[ ]` `answer "<query>" --k`** — `search` → `Generator().answer()` → print.
+**5.6 `[ ]` `answer "<query>" --k`** — `search(q)` → `Augmentation` → `Generator.generate()` → print.
 
 **5.7 `[ ]` `answer_dataset --student_search_results_path --save_directory`**
 - Read the `StudentSearchResults` file from `search_dataset` — **not** the index, no retrieval.
@@ -268,7 +337,7 @@ actually were.
 | `src/index.py` | the commented `bm25s.tokenize` line, the two commented lines at the end of `index_machine` |
 | `src/evaluate.py:4` | `# from tqdm import tqdm` |
 | `src/evaluate.py:22` | the commented `g_checker.rag_questions[...]` line |
-| `src/rag_flow.py` | **0-byte file** — planned home of `Generator` (5.1) |
+| `src/search.py` `search()` | prints one line per hit — fine for the CLI, noisy when `answer` calls it; move the print to the command later |
 | `main.py` | `print("Hello from rag!")`, the `uv init` leftover; the entry point is `python -m src` |
 
 flake8 does not flag commented-out code or an empty module, but the defense will ask what each
@@ -362,13 +431,12 @@ stays there, and a later `git rm` does not shrink the repo. Verify with
 
 # Order of work
 
-1. **3.1** delete `evaluate.py:78` — labels then match. **3.2** leftovers. *One line from done.*
-2. **3.5** the pre-moulinette list: the `Public`/`public` path (`search.py:55`), `--k 10`
-   default + regeneration (`search.py:56`), `lint-strict`, flake8 config.
-3. **4** moulinette, until `Student data is valid: True`. *Catches format errors our own
-   evaluator cannot see.*
-4. **5** answer generation — read `explaination.md`, then 5.0 → 5.9 in order. *Biggest
-   remaining piece.*
+1. **A1-A10** fix `augmentation.py`, then the prompt check. *Current work.*
+2. **5.2b** `generation.py`, test alone; then **5.6-5.9** `answer`, `answer_dataset`, register,
+   check answers. *Biggest remaining piece.*
+3. **3.2** `evaluate` polish + regenerate the code search file at `--k 10`.
+4. **3.5.6** `.flake8` config, then **4** moulinette (`~/Downloads/RAG/moulinette.zip`), until
+   `Student data is valid: True`. *Before the defense, no exceptions.*
 5. **1.1** Markdown chunker, then re-run `evaluate` on docs. *Keep it only if the number rises.*
 6. **6.3-6.6** dead code, docstrings, edge cases.
 7. **8** the README's 10 sections — material is already written in `completed.md`.

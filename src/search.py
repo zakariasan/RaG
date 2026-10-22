@@ -20,7 +20,7 @@ def search(
     k: int = 10,
     save_directory: str = 'data/processed/',
     load_dir: str = 'chunks.json'
-) -> None:
+) -> list[MinimalSource]:
     """
     Search for a query in the corpus of processed/chunks.json get the
     least top-K
@@ -42,12 +42,16 @@ def search(
             raise ValueError('Empty query')
         k = min(k, len(chunks))
         res, _scores = retriever.retrieve([tokens], k=k, show_progress=True)
+
+        out = []
         for i in res[0]:
             c = chunks[i]
+            out.append(MinimalSource(**c))
             print(
                 f"{c['file_path']} "
                 +
                 f"[{c['first_character_index']}:{c['last_character_index']}]")
+        return out
     except (OSError):
         raise ValueError('Index file not Found.')
 
@@ -65,7 +69,7 @@ def search_dataset(
     try:
 
         ds = RagDataset.model_validate_json(ft_open(dataset_path))
-        chunks = ft_open(os.path.join(save_processed, saved_file))
+        chunks = json.loads(ft_open(os.path.join(save_processed, saved_file)))
         all_tokens = [tokenizer(q.question) for q in ds.rag_questions]
         retriever = bm25s.BM25.load(save_processed)
         res, _scores = retriever.retrieve(all_tokens, k=k)

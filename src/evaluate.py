@@ -14,18 +14,18 @@ def iou(a: int, b: int, c: int, d: int) -> float:
 def recalling(
     questions: StudentSearchResults,
     g_checker: MoulinetteDataset,
-    k: int
+    k: int,
+    truth: dict
 ) -> float:
     """Calculate the recall@k one time"""
     hits = 0
 
-    truth = {q.question_id: q for q in g_checker.rag_questions}
     if len(truth) == 0:
         raise ValueError("SOmthing wrong with the dataset to check")
     # print(questions)
     for question in questions.search_results:
+        elem = truth[question.question_id]
         for src in question.retrieved_sources[:k]:
-            elem = truth[question.question_id]
             if src.file_path == elem.sources[0].file_path and\
                     iou(src.first_character_index,
                         src.last_character_index,
@@ -66,9 +66,11 @@ def evaluate(
               ]
         print(f"Total number of questions with student sources: {len(ss)}")
         print("Evaluation Results \n ========================================")
+
+        truth = {q.question_id: q for q in g_checker.rag_questions}
         for kk in (1, 3, 5, 10):
-            out = recalling(questions, g_checker, kk)
-            print(f"Reacll@{kk}: {out:.2f}")
+            out = recalling(questions, g_checker, kk, truth)
+            print(f"Recall@{kk}: {out:.3f}")
 
     except (OSError) as e:
         print(e)
