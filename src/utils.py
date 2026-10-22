@@ -1,7 +1,10 @@
 def ft_open(filename: str) -> str:
     """Open a file """
-    with open(filename, 'r', encoding='utf-8') as f:
-        src_file = f.read()
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            src_file = f.read()
+    except OSError as e:
+        print(e)
     return src_file
 
 
