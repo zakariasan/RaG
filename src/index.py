@@ -20,7 +20,7 @@ def git_file() -> list[str]:
         return []
     res = []
     for item in tmp.splitlines():
-        if item.strip().startswith('#') or len(item) == 0:
+        if item.strip().startswith('#') or item.strip() == '':
             continue
         res.append(item.strip())
     res.append('.git')

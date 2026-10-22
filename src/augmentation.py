@@ -1,11 +1,10 @@
 from .utils import ft_open
-from .search import search
 
-from .model import MinimalSource
+from .models import MinimalSource
 
 
 class Augmentaion:
-    def __init__(self):
+    def __init__(self) -> None:
         """Start Up the augmentation pipeLine"""
         self._context = ''
 
@@ -19,16 +18,23 @@ class Augmentaion:
             context += file[
                 elem.first_character_index:elem.last_character_index]
             context += '\n'
-        self._context = context + f'\nQuestion: {query}'
+        self._context = context
 
-    def build_prompt(self) -> str:
+    def build_prompt(self) -> list[dict[str, str]]:
         """Build prom for the llm can give us ans"""
-        prompt = (
-            'SYSTEM: You answer questions about the vLLM codebase.'
-            'Use ONLY the sources below. If they do not contain '
-            f'the answer, say so.\n'
-            'USER:\n{self._context}'
-        )
+
+        prompt = [
+            {
+                'role': 'system',
+                'content': (
+                    'You answer questions about the vLLM codebase.'
+                    'Use ONLY the sources below. If they do not contain '
+                    'the answer, say so.')
+            },
+            {
+                'role': 'user',
+                'content': self._context
+            }
+        ]
 
         return prompt
-
