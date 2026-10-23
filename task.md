@@ -1,7 +1,10 @@
 # task.md — what is left to do
 
-**Next task:** list **B** — write `src/generation.py` and test it alone. Augmentation (list A)
-works. Then C (`answer`), D (`answer_dataset`), E (polish), F (moulinette, before the defense).
+**Next task:** list **G** — make one question fast enough that a dataset run is practical,
+with **H** (see each answer live, save as you go, resume) next to it. **I** = every future
+enhancement (5 bonuses + quality), with steps.
+A (augmentation), B (generation), C (`answer`) work; D (`answer_dataset`) is written and lints,
+but a 3-question run did not finish in 10 min. Then E (polish), F (moulinette, before defense).
 
 Remaining work only, for every part of the project. How the system works and what is already
 done live in `completed.md`. Shell tests per part live in `checker.md`. How the LLM part works,
@@ -65,10 +68,14 @@ present. flake8 clean. Leftovers, no rush:
 
 ---
 
-# B. `src/generation.py` — `[ ]` NEXT
+# B. `src/generation.py` — `[x]` works (2026-10-23)
 
-Today: a stub. mypy says `generation.py:6: Missing return statement [empty-body]` — expected,
-disappears when `generate` returns a string.
+Test B passed: `Hello! How can I assist you today?` — no `<think>`, no echoed prompt.
+First load 37.9 s (includes the 1.5 GB download, now cached in `~/.cache/huggingface/hub`);
+generation of a ~15-token prompt: 4.8 s. `make lint` clean.
+Leftover: the decode-check error message says "chat template".
+
+The steps below are kept as the reference for the defense.
 
 **What to write, in this order:**
 
@@ -119,7 +126,11 @@ print(Generator().generate(a.build_prompt(q)))
 
 ---
 
-# C. `answer` command — `[ ]` after B
+# C. `answer` command — `[x]` works (2026-10-23), slow
+
+LoRA question → `The HTTP endpoint used to dynamically load a LoRA adapter in vLLM is
+`/v1/load_lora_adapter`.` — correct, grounded. Took minutes (see G). `search()` prints its 5
+hit lines before the answer (E). Leftover: docstring.
 
 | Step | What exactly |
 |---|---|
@@ -134,7 +145,13 @@ Edge cases that must print one line, not traceback: `answer ""`, `answer "x" --k
 
 ---
 
-# D. `answer_dataset` command — `[ ]` after C
+# D. `answer_dataset` command — `[~]` written, lints, not yet run to completion
+
+Code matches D1-D11 (parse with `StudentSearchResults`, one `Generator`, tqdm, write once
+after the loop, `k=questions.k`, subject's print texts). The 3-question test was **stopped
+after 10 min without finishing** — speed problem, not a code bug. Do G first, then re-run the
+3-question test. Leftovers: `unit=' Question'` → `'question'`, closing `)` indent at line 59,
+docstrings.
 
 | Step | What exactly |
 |---|---|
@@ -173,6 +190,128 @@ print(len(r.search_results), all(x.answer for x in r.search_results))
 **D12 `[ ]` Check answers.** Compare 5-10 answers with the `answer` field in
 `data/datasets_public/public/AnsweredQuestions/dataset_docs_public.json`. Record in
 `completed.md`: time per question, one good and one bad answer, any prompt change you tried.
+
+---
+
+# G. Speed — `[ ]` NEXT
+
+**Why it is slow — the machine, measured:** Intel i7-7600U (2017 laptop), **2 cores / 4
+threads**, torch uses 2 threads, no GPU. "Say hello" (~15 prompt tokens) = 4.8 s. A real question
+= ~2200 prompt tokens (5 sources × ~2000 chars) + up to 256 answer tokens → minutes.
+
+Two costs (see `explaination.md` §5):
+- **prefill** — reading the prompt. Grows with prompt length → fewer/shorter sources.
+- **decode** — writing the answer, one full model pass per token → fewer answer tokens.
+
+Do **G1 first** so every later change is a measured number, not a guess.
+
+| # | Change | Where | Expected effect |
+|---|---|---|---|
+| G1 | **Measure.** In `generate`, time the call and print `prompt_tokens`, `new_tokens`, seconds: `ids['input_ids'].shape[1]` and `len(new)` | `generation.py` | tells you if prefill or decode dominates |
+| G2 | `max_new_tokens` 256 → **128** | `generation.py` default | decode capped at half |
+| G3 | System rule: *"Answer in 1 to 3 sentences."* | `augmentation.py` system content | model stops earlier on its own — real answers are 1-2 sentences |
+| G4 | **k = 3** instead of 5 in `answer` / `answer_dataset` | `answer.py` defaults | prompt ~40% shorter. Cost: right chunk in top 3 for 76% of docs questions vs 83% in top 5 — measure answer quality, not just time |
+| G5 | **Token budget**: count tokens with `self.tokenizer`, drop the lowest-ranked source **whole** while over e.g. 1500 tokens | `augmentation.py` (needs the tokenizer passed in) | caps worst-case prompts (some chunks are code = more tokens per char) |
+| G6 | Try `torch.set_num_threads(4)` once, compare with 2 | `generation.py` `__init__` | maybe faster, maybe slower (2 physical cores) — keep only if G1 says so |
+
+**Test after each change** — one question, compare with the G1 baseline:
+```sh
+time uv run python -m src answer "What HTTP endpoint is used to dynamically load a LoRA adapter in vLLM?"
+```
+Accept when: still names `/v1/load_lora_adapter`, and time drops. Record every row
+(change → prompt tokens → new tokens → seconds) in `completed.md` — that table is README
+*Performance analysis* material.
+
+**Running a full dataset anyway.** Even fast, 100 questions on this CPU is long. Run it detached
+and let it go overnight:
+```sh
+nohup uv run python -m src answer_dataset > answer_docs.log 2>&1 &
+tail -f answer_docs.log        # tqdm shows progress + time left
+```
+The subject relaxes answer quality because of the model; it does not set a time limit on
+`answer_dataset` (limits are on indexing 5 min and retrieval 90 s).
+
+Not worth it here: bf16/fp16 on this CPU (no native support → slower), batching (complex,
+little gain on 2 cores).
+
+---
+
+# H. Live feedback and safe long runs — `[ ]` with / right after G
+
+None of these makes a single question faster (only G does). They make a long run **visible**
+(see each answer as it comes, stop early if bad) and **safe** (Ctrl+C or a crash loses nothing).
+
+## H1 `[ ]` Print each answer as soon as it is generated — `answer.py`, `answer_dataset`
+
+Inside the loop, right after `ans = g.generate(msg)`:
+```python
+tqdm.write(f'Q: {question.question}\nA: {ans}\n')
+```
+**Why `tqdm.write`, not `print`:** `print` breaks the progress bar into many lines;
+`tqdm.write` prints above the bar and redraws it.
+Optional: a `verbose: bool = True` parameter so the CLI can turn it off (`--verbose False`).
+**Accept when:** the 3-question test shows 3 Q/A blocks above one clean bar.
+
+## H2 `[ ]` Save as you go — `answer_dataset`
+
+Today the file is written once at the end → a stop at question 80 loses 80 answers.
+
+| Step | What exactly |
+|---|---|
+| H2.1 | compute `path` (and `os.makedirs`) **before** the loop, not after |
+| H2.2 | move the write into a small helper `save(rows, k, path)` that builds `StudentSearchResultsAndAnswer` and writes `model_dump_json(indent=4)` |
+| H2.3 | inside the loop: `if len(rows) % 10 == 0: save(rows, questions.k, path)` |
+| H2.4 | after the loop: `save(...)` once more (the last <10 rows) + the `Saved ...` print |
+
+**Why every 10, not every 1:** rewriting the whole file each question costs more as it grows;
+every 10 bounds the loss to 10 answers and the cost to 10 writes per 100 questions.
+**Accept when:** Ctrl+C after ~12 questions leaves a valid file with 10 answered rows.
+
+## H3 `[ ]` Resume after a stop — `answer_dataset` (needs H2)
+
+| Step | What exactly |
+|---|---|
+| H3.1 | before the loop: `if os.path.exists(path):` load it with `StudentSearchResultsAndAnswer.model_validate_json(ft_open(path))` |
+| H3.2 | `done = {r.question_id: r for r in old.search_results}`; start `rows = list(old.search_results)` |
+| H3.3 | in the loop: `if question.question_id in done: continue` |
+| H3.4 | `print(f'Resuming: {len(done)} already answered')` |
+| H3.5 | **wrap H3.1 in `try/except ValidationError`** — a half-written or old-format file must not crash; start fresh instead |
+| H3.6 | parameter `resume: bool = True`, so `--resume False` forces a fresh run |
+
+**Watch out:** output row order must stay the input order. Simplest: build the final list by
+walking `questions.search_results` and taking each answer from `done` or the new result.
+**Accept when:** stop at 12, re-run → prints `Resuming: 10 already answered`, the bar starts at
+10/100, final file has 100 rows in input order.
+
+## H4 `[ ]` Stream the words — `generation.py`, used by `answer` only
+
+```python
+from transformers import TextStreamer
+streamer = TextStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+out = self.model.generate(**ids, streamer=streamer, max_new_tokens=..., do_sample=False)
+```
+- Add a parameter `stream: bool = False` to `generate`; pass `streamer` only when `True`.
+- `answer` calls `generate(msg, stream=True)` and **does not print the return value again**
+  (the streamer already printed it).
+- `answer_dataset` keeps `stream=False` — streaming would fight with the tqdm bar.
+**Accept when:** words appear one by one on `answer "..."`, total time unchanged.
+
+## H5 `[ ]` Interactive mode — new command `chat` (optional, good for the defense demo)
+
+Every `answer` call reloads the index and the model. A loop loads both once:
+
+| Step | What exactly |
+|---|---|
+| H5.1 | `chat(k: int = 3) -> None` in `answer.py`; create `Augmentation()` and `Generator()` once |
+| H5.2 | `while True: q = input('answer> ').strip()` |
+| H5.3 | `if q in ('', 'exit', 'quit'): break` |
+| H5.4 | `search` → `read_sources` → `build_prompt` → `generate(msg, stream=True)` |
+| H5.5 | catch `ValueError` from `search` (short/empty query) per question: print it, keep looping |
+| H5.6 | `EOFError` (Ctrl+D) → break cleanly |
+| H5.7 | register `'chat': chat` in `__main__.py` |
+
+**Accept when:** 3 questions in a row, the model loads once, `exit` and Ctrl+D both quit
+without a traceback.
 
 ---
 
@@ -542,23 +681,175 @@ stays there, and a later `git rm` does not shrink the repo. Verify with
 
 # 11. Bonus — only after the mandatory part fully validates
 
-- `[ ]` semantic embeddings (all-MiniLM-L6-v2) beside the lexical index
-- `[ ]` hybrid retrieval, fusing the two rankings
-- `[ ]` incremental indexing — needs 1.4 (`sorted()`) first
-- `[ ]` caching: cold start and repeated queries
-- `[ ]` local HTTP API
+Subject chapter IX: graded **only** if the whole mandatory part validates; each is 1 point,
+must **work** (not just be described), may be demoed, CPU-only machine. Details in list **I**.
+
+- `[ ]` I1 semantic embeddings (all-MiniLM-L6-v2) beside the lexical index
+- `[ ]` I2 hybrid retrieval, fusing the two rankings
+- `[ ]` I3 incremental indexing — needs 1.4 (`sorted()`) first
+- `[ ]` I4 caching: cold start and repeated queries
+- `[ ]` I5 local HTTP API
+
+---
+
+# I. Future enhancements — the full list, with how
+
+Two kinds: **I1-I5 = the 5 official bonuses** (points), **I6-I12 = quality** (no points by
+themselves, but they raise recall, answer quality or the defense). Every retrieval change is
+judged by `evaluate`: docs R@5 0.830 / code R@5 0.657 are the numbers to beat — keep a change
+only if it wins, and record it in `completed.md` either way (a measured "no" is a result).
+
+## I1 `[ ]` Bonus 1 — Semantic embeddings
+
+**Idea:** BM25 matches **words**; embeddings match **meaning** ("load adapter" ≈ "register
+LoRA"). Each chunk becomes a vector of 384 numbers; a question too; nearest vectors = similar.
+
+| Step | What exactly |
+|---|---|
+| I1.1 | `uv add sentence-transformers` (pulls on the torch you already have) |
+| I1.2 | in `index`: after chunking, `m = SentenceTransformer('all-MiniLM-L6-v2')`; `emb = m.encode(chunk_texts, batch_size=64, show_progress_bar=True, normalize_embeddings=True)` |
+| I1.3 | save `np.save(save_dir/'embeddings.npy', emb)` — **row i = chunk i**, same invariant as BM25 (`completed.md` 3.6) |
+| I1.4 | new `search_semantic(query, k)`: encode the query (normalized), `scores = emb @ q`, `np.argsort(-scores)[:k]` → chunk ids → `MinimalSource` |
+| I1.5 | flag `--method bm25|semantic|hybrid` on `search` / `search_dataset` |
+| I1.6 | measure with `evaluate` on both datasets, record the table |
+
+**Watch out:** ~18 700 chunks on this CPU = several minutes of encoding — check it stays under
+the **5-minute indexing limit**; if not, embed only `.py/.md/.txt`. MiniLM reads max 256 tokens
+→ a 2000-char chunk is partly cut; note it in the README.
+**Expect:** better on paraphrased docs questions, worse on exact identifiers.
+
+## I2 `[ ]` Bonus 2 — Hybrid retrieval (needs I1)
+
+**Idea:** take both rankings and merge them. Use **Reciprocal Rank Fusion** — it needs only the
+ranks, so BM25 scores (0-30) and cosine scores (0-1) never have to be compared.
+
+| Step | What exactly |
+|---|---|
+| I2.1 | get top 50 from BM25 and top 50 from semantic |
+| I2.2 | `score[chunk] += 1 / (60 + rank)` for each list it appears in (rank from 1; 60 is the standard constant) |
+| I2.3 | sort by fused score, take top k |
+| I2.4 | `evaluate` both datasets: BM25 vs semantic vs hybrid, one table |
+
+**Accept when:** hybrid R@5 ≥ the best of the two alone on at least one dataset. If not,
+keep it as an option and report the numbers.
+
+## I3 `[ ]` Bonus 3 — Incremental indexing (needs 1.4)
+
+**Idea:** a changed file re-indexes only that file.
+
+| Step | What exactly |
+|---|---|
+| I3.1 | 1.4 first: `sorted()` files and folders so the order is stable |
+| I3.2 | save a manifest `data/processed/manifest.json`: `{path: {"mtime": ..., "size": ..., "sha1": ..., "chunks": [first_id, last_id]}}` |
+| I3.3 | on `index --incremental`: walk, compare with the manifest → lists `added`, `changed`, `deleted` |
+| I3.4 | keep the chunks of unchanged files, re-chunk only `added + changed`, drop `deleted` |
+| I3.5 | **rebuild the BM25 matrix** from the kept + new token lists (bm25s cannot patch in place; tokenizing is the slow part, BM25 build is fast) — so also save the token lists per file |
+| I3.6 | rewrite `chunks.json`, BM25 files, embeddings (if I1) **in the same order** |
+| I3.7 | print `Re-indexed <n> files, kept <m>` |
+
+**Accept when:** `touch` one file → incremental run re-chunks 1 file, far faster than a full
+index, and `evaluate` gives the **same** numbers as a full rebuild.
+**Watch out:** the parallel-list invariant — this is where it breaks silently.
+
+## I4 `[ ]` Bonus 4 — Caching
+
+| Step | What exactly |
+|---|---|
+| I4.1 | **cold start:** measure today: time to load `chunks.json` + BM25 + model |
+| I4.2 | index cache: keep the loaded retriever/chunks in a module-level object so `chat` / the API (I5) load once; optional `mmap=True` on `BM25.load` |
+| I4.3 | query cache: `functools.lru_cache` on a `retrieve(query, k)` that returns a **tuple** (lists are unhashable / mutable) |
+| I4.4 | answer cache on disk: `data/cache/answers.json` keyed by `sha1(question + source ids + model + prompt version)` → a repeated question returns instantly |
+| I4.5 | measure: first vs second call of the same query, write both times in `completed.md` |
+
+**Watch out:** the cache key must include the **prompt version** — change the prompt, old
+cached answers must not come back.
+
+## I5 `[ ]` Bonus 5 — Local HTTP API
+
+| Step | What exactly |
+|---|---|
+| I5.1 | `uv add fastapi uvicorn` |
+| I5.2 | `src/api.py`: load index + `Generator` **once at startup** |
+| I5.3 | `GET /search?q=...&k=5` → `list[MinimalSource]` (pydantic models serialize directly) |
+| I5.4 | `POST /answer` body `{"question": "...", "k": 3}` → `MinimalAnswer` |
+| I5.5 | errors → HTTP 400 with the message (empty query, bad k), never a 500 traceback |
+| I5.6 | command `serve --host 127.0.0.1 --port 8000` registered in `__main__.py` |
+| I5.7 | flake8 + mypy apply to this file too (subject) |
+
+Test: `curl 'http://127.0.0.1:8000/search?q=lora+adapter&k=3'` and
+`curl -X POST http://127.0.0.1:8000/answer -H 'Content-Type: application/json' -d '{"question":"What HTTP endpoint loads a LoRA adapter?"}'`.
+**Bind to `127.0.0.1`**, not `0.0.0.0` — "local" API, and nothing on the network should reach
+a model server.
+
+## I6 `[ ]` Markdown chunker — same as 1.1 (mandatory-ish: two distinct strategies)
+
+Heading-based splitting, never inside a ``` fence. Keep only if docs R@5 ≥ 0.830. See 1.1.
+
+## I7 `[ ]` Prompt improvements (answer quality)
+
+- Tell the model the source numbers: *"Cite the source number like [2]."* — answers become
+  checkable at the defense.
+- Put the **highest-ranked source last**, next to the question (small models attend most to
+  the end of the prompt). Measure on the same 10 questions.
+- For code questions, add the language hint: *"Sources may be Python code."*
+- Keep a `PROMPT_VERSION = 'v1'` constant; bump it on every change (needed by I4.4).
+
+## I8 `[ ]` Answer evaluation (measure answers, not only retrieval)
+
+| Step | What exactly |
+|---|---|
+| I8.1 | command `evaluate_answers --answers_path ... --dataset_path ...` |
+| I8.2 | per question: word overlap between our answer and the ground-truth `answer` (lowercase tokens, `|ours ∩ truth| / |truth|`) |
+| I8.3 | print the mean, plus the 3 worst questions to read by hand |
+| I8.4 | use it to compare prompt versions (I7) and k=3 vs k=5 (G4) with a number |
+
+Crude, but turns "the answers look better" into a figure for the README.
+
+## I9 `[ ]` Retrieval tuning (cheap, measurable)
+
+- BM25 parameters: try `k1` ∈ {1.2, 1.5, 2.0}, `b` ∈ {0.5, 0.75, 0.9}; a loop over 9
+  combinations, `evaluate` each, keep the best. Record the grid in `completed.md`.
+- Re-try the `.py/.md/.rst/.txt` filter: 0.850 vs 0.830 docs (`completed.md` 6.2) — decide again
+  once everything else is fixed.
+- Boost the file path: add path tokens (`docs`, `features`, `lora`) to each chunk's tokens —
+  questions often name the feature that is also the file name.
+
+## I10 `[ ]` Tests — same as section 9
+
+pytest, run with `uv run pytest`; add a `test` rule to the Makefile. Start with
+`hard_split`, `tokenizer`, `iou`, chunk reconstruction.
+
+## I11 `[ ]` Robustness pass (the reviewer "pushes it in odd directions")
+
+Every command, each must print one line, never a traceback: empty query, 1-char query, `k=0`,
+`k=-1`, `k=100000`, missing index, missing dataset file, malformed JSON, dataset with 0
+questions, a question in another language, Ctrl+C during `answer_dataset` (with H2 the file
+must still be valid).
+
+## I12 `[ ]` Smaller wins
+
+- `search()` print → move to the CLI path (E).
+- `.flake8` config (3.5.6).
+- `make lint-strict` with `uv run` (7).
+- CPU-only torch wheel → `uv sync` GBs lighter for the reviewer (`explaination.md` §1).
 
 ---
 
 # Order of work
 
-1. **B** `generation.py`, test alone, then with A. *Current work.*
-2. **C** `answer`, **D** `answer_dataset` (+ D12 check answers). *Biggest remaining piece.*
+1. **G** speed: G1 measure, then G2-G6 one at a time. *Current work.*
+   **H1** (print each answer) alongside — 1 line, makes every test readable.
+2. **H2 + H3** save as you go + resume. *Makes the long run safe.*
+3. **D** re-run the 3-question test, then the full datasets (overnight, `nohup`), D12 check
+   answers. **H4** streaming for `answer`.
 3. **3.2** `evaluate` polish + regenerate the code search file at `--k 10`.
 4. **3.5.6** `.flake8` config, then **4** moulinette (`~/Downloads/RAG/moulinette.zip`), until
    `Student data is valid: True`. *Before the defense, no exceptions.*
 5. **1.1** Markdown chunker, then re-run `evaluate` on docs. *Keep it only if the number rises.*
 6. **6.3-6.6** dead code, docstrings, edge cases.
 7. **8** the README's 10 sections — material is already written in `completed.md`.
-8. **9** tests.
-9. **11** bonus.
+8. **9** tests (I10), **I11** robustness pass.
+9. **I7, I8, I9** quality: prompt, answer evaluation, BM25 tuning.
+10. **I1-I5** bonus — only once the mandatory part validates in full. Suggested order:
+    I4 caching (smallest) → I5 API (reuses I4) → I1 embeddings → I2 hybrid → I3 incremental
+    (hardest). **H5** `chat` fits with I4/I5.

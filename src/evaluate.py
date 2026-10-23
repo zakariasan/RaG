@@ -1,4 +1,8 @@
-from .models import (StudentSearchResults, MoulinetteDataset)
+from .models import (
+    StudentSearchResults,
+    MoulinetteDataset,
+    MoulinetteAnsweredQuestion
+)
 from .utils import ft_open
 
 # from tqdm import tqdm
@@ -15,7 +19,7 @@ def recalling(
     questions: StudentSearchResults,
     g_checker: MoulinetteDataset,
     k: int,
-    truth: dict
+    truth: dict[str, MoulinetteAnsweredQuestion]
 ) -> float:
     """Calculate the recall@k one time"""
     hits = 0
