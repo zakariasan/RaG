@@ -7,21 +7,24 @@ class Augmentation:
     def __init__(self) -> None:
         """Start Up the augmentation pipeLine"""
         self._context = ''
+        self.cache: dict[str, str] = {}
 
     def read_sources(self, sources: list[MinimalSource]) -> None:
         """Read the resources from the query"""
 
         context = ''
         for i, elem in enumerate(sources):
-            file = ft_open(elem.file_path)
-            context += f'file[{i + 1}]: {elem.file_path}\n'
-            context += file[
-                elem.first_character_index:elem.last_character_index]
+            if elem.file_path not in self.cache:
+                self.cache[elem.file_path] = ft_open(elem.file_path)
+            context += f'[{i + 1}]: {elem.file_path}\n'
+            context += self.cache[elem.file_path][
+                elem.first_character_index:elem.last_character_index
+            ]
             context += '\n'
         self._context = context
 
     def build_prompt(self, query: str) -> list[dict[str, str]]:
-        """Build prom for the llm can give us ans"""
+        """Turn retrieved sources into chat messages for the LLM"""
 
         prompt = [
             {
@@ -33,7 +36,7 @@ class Augmentation:
             },
             {
                 'role': 'user',
-                'content': f'{self._context}\nQuestion:{query}'
+                'content': f'{self._context}\nQuestion: {query}'
             }
         ]
 

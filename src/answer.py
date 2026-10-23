@@ -14,14 +14,15 @@ from .models import (
 )
 
 
-def answer(query: str, k: int = 5) -> None:
+def answer(query: str = '', k: int = 5) -> None:
     """Answer the query from retreved data"""
 
-    sources = search(query, k)
+    sources = search(query, k=k)
 
     a = Augmentation()
     a.read_sources(sources)
     msg = a.build_prompt(query)
+
     print(Generator().generate(msg))
 
 
@@ -51,9 +52,11 @@ def answer_dataset(
         a.read_sources(question.retrieved_sources[:k])
         msg = a.build_prompt(question.question)
         ans = g.generate(msg)
-        question_ans.append(
-            MinimalAnswer(**question.model_dump(), answer=ans)
-        )
+        question_ans.append(MinimalAnswer(
+            **question.model_dump(),
+            answer=ans
+        ))
+
     out = StudentSearchResultsAndAnswer(
         search_results=question_ans,
         k=questions.k
@@ -61,7 +64,10 @@ def answer_dataset(
 
     os.makedirs(save_directory, exist_ok=True)
     path = os.path.join(
-        save_directory, os.path.basename(student_search_results_path))
+        save_directory, os.path.basename(student_search_results_path)
+    )
+
     with open(path, 'w', encoding='utf-8') as f:
         f.write(out.model_dump_json(indent=4))
+
     print(f'Saved student_search_results_and_answer to {path}')

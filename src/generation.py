@@ -18,7 +18,7 @@ class Generator:
         self,
         msg: list[dict[str, str]],
         max_new_tokens: int = 256
-    ) -> str:
+    ) -> list[dict]:
         """Return the msg from llm"""
 
         text = self.tokenizer.apply_chat_template(
@@ -28,8 +28,8 @@ class Generator:
             enable_thinking=False
         )
 
-        if not isinstance(text, str):
-            raise TypeError("Expected chat template to return a string")
+        # if not isinstance(text, str):
+        #    raise TypeError("Expected chat template to return a string")
 
         ids = self.tokenizer(text, return_tensors='pt')
         with torch.inference_mode():
@@ -41,10 +41,11 @@ class Generator:
         new = out[0][ids[
             'input_ids'
         ].shape[1]:]
-        answering = self.tokenizer.decode(
+        return self.tokenizer.decode(
             new,
             skip_special_tokens=True
-        )
-        if not isinstance(answering, str):
-            raise TypeError("Expected decode template to return a string")
-        return answering.strip()
+        ).strip()
+
+    #    if not isinstance(answering, str):
+    #        raise TypeError("Expected decode template to return a string")
+    #    return answering.strip()
