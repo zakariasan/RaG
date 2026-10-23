@@ -60,6 +60,7 @@ def answer_dataset(
             **question.model_dump(),
             answer=ans
         ))
+        tqdm.write(f'Q: {question.question}\nA: {ans}\n')
 
     out = StudentSearchResultsAndAnswer(
         search_results=question_ans,
