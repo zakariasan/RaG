@@ -1,14 +1,109 @@
 # task.md — what is left to do
 
-**Next task:** list **G** — make one question fast enough that a dataset run is practical,
-with **H** (see each answer live, save as you go, resume) next to it. **I** = every future
-enhancement (5 bonuses + quality), with steps.
-A (augmentation), B (generation), C (`answer`) work; D (`answer_dataset`) is written and lints,
-but a 3-question run did not finish in 10 min. Then E (polish), F (moulinette, before defense).
+> **LATEST — 2026-10-23 (read this first).** Sections below this box are the older detailed
+> plan; where they disagree with this box, **this box wins**. Full test runbook: `test.md`.
+
+## Where we are now
+
+| Part | State |
+|---|---|
+| index | `[x]` 18 738 chunks, ≤ 2000 chars, offsets exact, ~7 s |
+| search / `retrieve` | `[x]` returns `list[MinimalSource]`, prints once, CLI starts in ~1.4 s (was 22–46 s) |
+| search_dataset | `[x]` k ≤ 0 rejected, k capped, empty dataset OK, junk question → 0 sources (keep/hits) |
+| evaluate | `[x]` docs R@5 0.830, code R@5 0.657, missing file → rc=1 |
+| answer | `[x]` correct + grounded (`/v1/load_lora_adapter`), fp32, k=3, 128 tokens, ~172 s on this throttled laptop |
+| answer_dataset | `[~]` code OK (k check, lazy import) — **never run to completion; no partial save / resume; no `Processed i of N` print** |
+| error handling | `[x]` `ft_open` raises, `__main__` exits 1 / 130 — `[~]` ValidationError still prints `Error404` + 3-line dump |
+| `make lint` | `[~]` **1 error**: `src/search.py:16 F401 'typing.Any' imported but unused` — delete the line |
+| subject `lint` rule | `[ ]` subject says `flake8 .` / `mypy .` — needs `.flake8` + mypy exclude first |
+| layout | `[ ]` datasets must be `data/datasets/{Unanswered,Answered}Questions/` |
+| code search file | `[ ]` `data/output/.../dataset_code_public.json` still k=5 → regenerate `--k 10` |
+| moulinette | `[ ]` never run |
+| Markdown chunker | `[ ]` same splitter as plain text → not "two distinct strategies" |
+| docstrings PEP 257 | `[ ]` many missing / typos |
+| README | `[ ]` only the login line |
+| bonus | `[ ]` none (only after all above) |
+
+## Next steps (mandatory), in order
+
+1. `[ ]` delete `from typing import Any` in `search.py` → `make lint` green.
+2. `[ ]` `__main__.py`: `print(f"ERROR414: invalid JSON/dataset: {e.errors()[0]['msg']}", file=sys.stderr)`; all error prints to `sys.stderr`.
+3. `[ ]` `answer_dataset`: save every 10 rows (H2), resume (H3), `tqdm.write` each answer (H1), print `Processed {i} of {n} questions` (subject VI.7.2 step 4).
+4. `[ ]` token budget in `Augmentation` (subject VI.3 "within its token budget"): drop lowest-ranked source while prompt > ~1200 tokens.
+5. `[ ]` regenerate code search file `--k 10`; run full `answer_dataset` docs + code (overnight, charger on, `powerprofilesctl set performance`).
+6. `[ ]` layout `data/datasets/...` + defaults in `search.py`, `evaluate.py`; VI.7.2 commands verbatim.
+7. `[ ]` moulinette on both sets → `Student data is valid: True`.
+8. `[ ]` Markdown chunker (1.1) → re-evaluate docs ≥ 0.80.
+9. `[ ]` `.flake8` + Makefile `lint` = `flake8 .` / `mypy .` + `uv run`; remove `main.py test.py mini_docs.json .mini_docs.json`; dead code.
+10. `[ ]` docstrings (Google style) on every function/class.
+11. `[ ]` README (outline in `test.md` §7).
+12. `[ ]` bonus.
+
+## Explained: `keep` and `hits` in `search_dataset` (defense material)
+
+**Problem.** `bm25s.retrieve` takes a list of token lists and returns **one result row per
+list it received**. A question like `"a ?"` tokenizes to `[]` (1-char tokens dropped). Sending
+`[]` made BM25 hang, later it returned 10 random chunks (every score 0).
+
+```
+all_tokens = [ [],                         # q0 "a ?"  -> no tokens
+               ['load','lora','adapter'],  # q1
+               ['paged','attention'] ]     # q2
+```
+
+**Step 1 — `keep`: indices of questions that have tokens.**
+```python
+keep = [i for i, t in enumerate(all_tokens) if t]      # -> [1, 2]   ([] is falsy)
+```
+
+**Step 2 — send only those to BM25.**
+```python
+res, _ = retriever.retrieve([all_tokens[i] for i in keep], k=k)
+# input rows : [ tokens_q1, tokens_q2 ]
+# res rows   : [ row0,      row1      ]   <- row0 is q1, NOT q0
+```
+Row numbers have shifted. Using `res[i]` with the original index would give q1 the results of
+q2 and crash on q2 (IndexError).
+
+**Step 3 — `hits`: map each result row back to its original question.**
+```python
+hits = {qi: list(res[n]) for n, qi in enumerate(keep)}
+# enumerate(keep) -> (n=0, qi=1), (n=1, qi=2)   =>   hits = {1: row0, 2: row1}
+```
+`n` = position in BM25 output, `qi` = real question index.
+
+**Step 4 — loop over all questions, original order.**
+```python
+for i, q in enumerate(ds.rag_questions):
+    srcs = [MinimalSource(**chunks[j]) for j in hits.get(i, [])]
+# i=0 -> not in hits -> []        (junk question, honest 0 sources)
+# i=1 -> hits[1] -> q1's results
+# i=2 -> hits[2] -> q2's results
+```
+
+**Why it matters:** every `question_id` stays in the output in input order (file valid, the
+moulinette pairs every row); junk gets 0 sources, not random ones; no shift; empty dataset →
+`keep == []` → `if keep:` skips BM25, `hits == {}`, valid empty file. General pattern:
+*filter → process only valid items → map results back by original index.*
+
+## Explained: why `retrieve` returns `list[MinimalSource]`
+
+One function loads data (`chunks.json` + BM25) and turns BM25's numpy indices into objects.
+Every caller (`search` prints, `answer` builds the prompt) gets the same clean list: no
+`[0]`, no tuple, no numpy. Earlier bugs came from callers each re-doing this
+(`chunks=''` → k=0 → `[]` → model answered with **no context**; `res[0]` ints passed to
+`read_sources`). `search` returns `None`, so Fire stops printing every hit twice.
+
+## Speed — measured (details `test.md` §3)
+bf16 on this CPU (no bf16 hardware) never finished a question in 10 min → **fp32** fixed it.
+Prefill (reading the prompt) = 75–85 % of time; each source ≈ +450 tokens ≈ +12–20 s here.
+k=3 instead of 5: −27–38 %. "Answer in 1-3 sentences": 73 → 31 generated tokens. 2 threads best.
+
+---
 
 Remaining work only, for every part of the project. How the system works and what is already
-done live in `completed.md`. Shell tests per part live in `checker.md`. How the LLM part works,
-with links to read more, lives in `explaination.md`.
+done live in `completed.md`. Shell tests per part live in `checker.md` and `test.md`. How the
+LLM part works, with links to read more, lives in `explaination.md`.
 
 Legend: `[ ]` not started · `[~]` partial · **BLOCKER** = nothing after it can be measured.
 
@@ -193,7 +288,7 @@ print(len(r.search_results), all(x.answer for x in r.search_results))
 
 ---
 
-# G. Speed — `[ ]` NEXT
+# G. Speed — `[x]` G2 G3 G4 done + fp32 (2026-10-23, measured — see LATEST box); G5 token budget `[ ]`; G6 measured: 2 threads best
 
 **Why it is slow — the machine, measured:** Intel i7-7600U (2017 laptop), **2 cores / 4
 threads**, torch uses 2 threads, no GPU. "Say hello" (~15 prompt tokens) = 4.8 s. A real question
@@ -233,6 +328,9 @@ The subject relaxes answer quality because of the model; it does not set a time 
 
 Not worth it here: bf16/fp16 on this CPU (no native support → slower), batching (complex,
 little gain on 2 cores).
+**Measured 2026-10-23:** bf16 is what transformers 5 loads **by default** (checkpoint dtype) →
+a question never finished; `dtype=torch.float32` on CPU is mandatory here. int8 dynamic
+quantization: faster prefill but garbage output → rejected.
 
 ---
 
@@ -334,9 +432,9 @@ without a traceback.
 
 # Status in one line
 
-Retrieval **verified end to end**: docs R@5 **0.830** (need 0.80), code R@5 **0.657** (need
-0.50). `index`, `search`, `search_dataset`, `evaluate`, the models, **augmentation** are done.
-docs search file at `k=10` (R@10 **0.880**). **Now: B generation.** Then C, D, E, F.
+(Old line, superseded by the LATEST box.) Retrieval verified: docs R@5 **0.830**, code R@5
+**0.657**. index, search, search_dataset, evaluate, models, augmentation, generation, answer done.
+**Now: answer_dataset save/resume + full runs, then layout, moulinette, Markdown chunker, README.**
 
 ---
 
@@ -378,14 +476,14 @@ indexing bonus.
 
 **2.1 `[x]` Type hints** on `save_processed` and `saved_file` — done.
 
-**2.2 `[ ]` Empty-query case in `search_dataset`.** The tokenizer drops 1-character tokens, so
+**2.2 `[x]` Empty-query case in `search_dataset`** — done 2026-10-23 with `keep`/`hits` (LATEST box). The tokenizer drops 1-character tokens, so
 `"a b ?"` tokenizes to `[]`. Behaviour must be an empty `retrieved_sources`, not a crash from
 `bm25s`. Subject line 464 tests degenerate inputs.
 
-**2.3 `[ ]` Wrap the dataset parse in `try/except ValidationError`** for a clean message on a
+**2.3 `[~]` Wrap the dataset parse in `try/except ValidationError`** (caught in `__main__`, message still 3 lines + `Error404`) for a clean message on a
 malformed dataset instead of a pydantic traceback.
 
-**2.4 `[ ]` Use `ft_open`** in `search_dataset` instead of `open(...).read()` — it is imported
+**2.4 `[x]` Use `ft_open`** (done; `ft_open` now raises OSError instead of swallowing it) in `search_dataset` instead of `open(...).read()` — it is imported
 in `search.py` for exactly this.
 
 ---
@@ -609,7 +707,7 @@ one is for.
 
 **6.5 `[ ]` `chunk_nodes` has no docstring.** It is the most complex function in the project.
 
-**6.6 `[ ]` Re-check every command's edge cases.** None may traceback: empty query, nonsensical
+**6.6 `[~]` Re-check every command's edge cases** — 2026-10-23 retest: all rc=1 one line except ValidationError (3 lines). Full list in `test.md` §4. None may traceback: empty query, nonsensical
 query, `k=0`, negative `k`, missing file, malformed JSON, missing index. The catch-all in
 `__main__.py` is active now, so these print one line — verify each actually does.
 
@@ -620,8 +718,10 @@ query, `k=0`, negative `k`, missing file, malformed JSON, missing index. The cat
 **7.1 `[x]` `run` passes `--max_chunk_size 2000`** explicitly — done.
 **7.2 `[x]` `lint` targets `src`** rather than `.` — done, and that is what makes it finish.
 **7.3 `[x]` `clean` does not touch `data/`** — correct, keep it that way.
-**7.4 `[ ]` `lint-strict` still runs `mypy . --strict`** — walks the vLLM corpus. Use
-`mypy src --strict`.
+**7.4 `[-]` `lint-strict`** — optional in the subject, skipped by decision (2026-10-23).
+**7.5 `[ ]` `lint` must run `flake8 .` and `mypy .`** (subject V.2 says `.`, not `src`) — add
+`.flake8` `exclude = .git,__pycache__,.venv,data,.mypy_cache` and `[tool.mypy] exclude` in
+`pyproject.toml`, then switch; prefix tools with `uv run`.
 
 ---
 
@@ -666,8 +766,8 @@ README.md                                 at root                               
 Makefile                                  install run debug clean lint           [x]
 data/raw/vllm-0.10.1/                     corpus                                 [x]
 data/processed/                           index output, 18 738 chunks            [x]
-data/datasets/{Unanswered,Answered}Questions/                                    [x]
-data/output/search_results/<Scope>/       both datasets at k=5, redo at k=10     [~]
+data/datasets/{Unanswered,Answered}Questions/   [ ] today in data/datasets_public/public/ — move
+data/output/search_results/<Scope>/       docs k=10, code still k=5 → redo        [~]
 data/output/search_results_and_answer/<Scope>/                                   [ ]
 ```
 `.gitignore` has `/data/*` active and `git ls-files data` returns nothing — **nothing under

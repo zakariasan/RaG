@@ -24,7 +24,7 @@ def recalling(
     """Calculate the recall@k one time"""
     hits = 0
 
-    if len(truth) == 0:
+    if len(truth) == 0 or len(questions.search_results) == 0 or k <= 0:
         raise ValueError("SOmthing wrong with the dataset to check")
     # print(questions)
     for question in questions.search_results:
@@ -51,30 +51,26 @@ def evaluate(
     max_context_length: int = 2000
 ) -> None:
     """Check your answer protocol"""
-    try:
-        questions = StudentSearchResults.model_validate_json(
-            ft_open(
-                student_search_results_path))
-        g_checker = MoulinetteDataset.model_validate_json(
-            ft_open(dataset_path)
-        )
-        oversized = [s for r in questions.search_results
-                     for s in r.retrieved_sources
-                     if s.last_character_index - s.first_character_index
-                     > max_context_length
-                     ]
-        print(f"Student data is valid: {len(oversized) == 0}")
-        print(f"Total number of questions: {len(questions.search_results)}")
-        ss = [r for r in questions.search_results
-              if len(r.retrieved_sources) > 0
-              ]
-        print(f"Total number of questions with student sources: {len(ss)}")
-        print("Evaluation Results \n ========================================")
+    questions = StudentSearchResults.model_validate_json(
+        ft_open(
+            student_search_results_path))
+    g_checker = MoulinetteDataset.model_validate_json(
+        ft_open(dataset_path)
+    )
+    oversized = [s for r in questions.search_results
+                 for s in r.retrieved_sources
+                 if s.last_character_index - s.first_character_index
+                 > max_context_length
+                 ]
+    print(f"Student data is valid: {len(oversized) == 0}")
+    print(f"Total number of questions: {len(questions.search_results)}")
+    ss = [r for r in questions.search_results
+          if len(r.retrieved_sources) > 0
+          ]
+    print(f"Total number of questions with student sources: {len(ss)}")
+    print("Evaluation Results \n ========================================")
 
-        truth = {q.question_id: q for q in g_checker.rag_questions}
-        for kk in (1, 3, 5, 10):
-            out = recalling(questions, g_checker, kk, truth)
-            print(f"Recall@{kk}: {out:.3f}")
-
-    except (OSError) as e:
-        print(e)
+    truth = {q.question_id: q for q in g_checker.rag_questions}
+    for kk in (1, 3, 5, 10):
+        out = recalling(questions, g_checker, kk, truth)
+        print(f"Recall@{kk}: {out:.3f}")

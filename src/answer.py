@@ -1,9 +1,7 @@
 import os
 
-from .search import search
 from .augmentation import Augmentation
 
-from .generation import Generator
 from .utils import ft_open
 
 from tqdm import tqdm
@@ -13,11 +11,14 @@ from .models import (
     StudentSearchResults
 )
 
+from .search import retrieve
 
-def answer(query: str = '', k: int = 5) -> None:
+
+def answer(query: str = '', k: int = 3) -> None:
     """Answer the query from retreved data"""
 
-    sources = search(query, k=k)
+    from .generation import Generator
+    sources = retrieve(query, k=k)
 
     a = Augmentation()
     a.read_sources(sources)
@@ -31,9 +32,12 @@ def answer_dataset(
     'data/output/search_results/UnansweredQuestions/dataset_docs_public.json',
     save_directory: str =
     'data/output/search_results_and_answer/UnansweredQuestions',
-    k: int = 5
+    k: int = 3
 ) -> None:
 
+    if k <= 0:
+        raise ValueError('K must be positive')
+    from .generation import Generator
     questions = StudentSearchResults.model_validate_json(
         ft_open(student_search_results_path)
     )

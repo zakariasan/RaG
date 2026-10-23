@@ -598,6 +598,42 @@ Identical to the hand-computed values in 6.4 — the evaluator agrees with the r
 4. **Check the known values.** Having 0.540 / 0.830 and 0.354 / 0.657 as targets is what
    exposed both the 0.0 and the shifted labels in seconds.
 
+## 6.9 Robustness + speed session — 2026-10-23 (all re-tested)
+
+**Fixed (code written by me, re-tested; full results in `test.md`):**
+
+| Area | Before | After |
+|---|---|---|
+| `ft_open` (`utils.py`) | caught OSError, printed, returned unbound `src_file` → `cannot access local variable 'src_file'` everywhere | lets OSError propagate; callers' `except OSError` work again |
+| `__main__.py` | every error exit code 0 | `sys.exit(1)` on errors, `130` on Ctrl-C, `ValidationError` caught first |
+| startup | torch imported for every command → `search` 22–46 s | `Generator` imported inside `answer` / `answer_dataset` → `search` ~1.4 s |
+| `search.py` | `search` printed + returned (Fire printed every hit twice); callers re-did index loading | `retrieve()` loads once, returns `list[MinimalSource]`; `search()` only prints, returns `None` |
+| `search_dataset` | k ≤ 0 accepted, k not capped, empty dataset crash, `"a ?"` hung / got 10 random chunks | k checked + capped; `keep`/`hits` (explained in `task.md` LATEST box): junk question → 0 sources, empty dataset → valid empty file |
+| `answer` | got 0 sources (`chunks=''` → k=0) → answered "vLLM does not provide…" | correct grounded answer naming `/v1/load_lora_adapter`, `/v1/unload_lora_adapter`, `VLLM_ALLOW_RUNTIME_LORA_UPDATING` |
+| `answer_dataset` | no k check | `k <= 0` → error |
+| `evaluate` | `if len(truth) or …` (inverted, always raised); missing file → bare print, rc 0 | `== 0`; missing file → `ERROR414`, rc 1 |
+| `generation.py` | bf16 by default (checkpoint dtype), `max_new_tokens=256` | fp32 on CPU / bf16 on CUDA, `max_new_tokens=128` |
+| `augmentation.py` | no length rule | "Answer in 1-3 sentences." |
+| `answer` k | 5 | 3 |
+
+**Speed measured** (i7-7600U 2C/4T, AVX2 only, throttled ~1 GHz, busy; numbers pessimistic):
+
+| config | prompt tok | prefill s | total s |
+|---|---|---|---|
+| bf16 (old default), K=5 | – | – | > 10 min, never finished |
+| fp32, K=5 | 2171–2447 | 54–76 | 66–127 |
+| fp32, K=3 | 1257–1456 | 37–46 | 48–78 |
+| fp32, K=3 + 128 tok + short prompt | 1265–1464 | 41–44 | 52–72 |
+| full `answer` CLI (load + retrieve + generate), K=3 | – | – | 172 (machine busy) |
+
+Lessons: (1) a CPU without bf16 hardware runs bf16 ~100x slower (0.3 vs 33 GFLOPS) —
+always set `dtype` explicitly. (2) prefill dominates (75–85 %): fewer/shorter sources is the
+lever. (3) A fast answer can be a wrong one: the 41 s run had **zero sources** — always check
+the answer, not only the time. (4) 2 threads (physical cores) beat 4.
+
+**Recall unchanged after all fixes:** docs 0.540 / 0.760 / 0.830 / 0.880, code (k=10 rerun)
+0.354 / 0.566 / 0.657 / 0.697.
+
 ---
 
 # 7. Bugs already fixed — the defense material
@@ -659,6 +695,18 @@ called `UnansweredQuestions` with no `.json`, which the grader cannot pair with 
 | `from models import RagDataset` | absolute import took the whole CLI down |
 | `import bm25` | `bm25` is a shim package; the real library is `bm25s` |
 
+**Fixed 2026-10-23 (same lesson: never print-and-continue):**
+
+| Bug | Cause |
+|---|---|
+| `cannot access local variable 'src_file'` | `ft_open` swallowed OSError and returned an unset name |
+| `evaluate` always "SOmthing wrong" | `if len(truth) or …` — missing `== 0` |
+| `answer` answered without context | `retrieve(query, k)` got `chunks=''` → `k = min(k, 0)` → `[]` |
+| `search` crash `cannot access local variable 'chunks'` | chunks list passed as `load_dir`, `if load_dir == 'chunks.json'` never true |
+| hits printed twice | Fire prints the return value of a CLI function |
+| `"a ?"` in a dataset got 10 random sources | empty token list sent to BM25 — every score 0 |
+| bf16 never finished | transformers 5 loads checkpoint dtype; CPU has no bf16 units |
+
 ---
 
 # 8. What exists on disk today
@@ -670,16 +718,18 @@ called `UnansweredQuestions` with no `.json`, which the grader cannot pair with 
 | `src/python_file_chunker.py` | AST chunker — verified exact |
 | `src/txt_file_chunker.py` | line-based `hard_split` wrapper |
 | `src/index.py` | walk + gitignore filter + chunk + tokenize + BM25 save |
-| `src/search.py` | `search` and `search_dataset` |
+| `src/search.py` | `retrieve` (returns `list[MinimalSource]`), `search` (prints), `search_dataset` (keep/hits) |
 | `src/models.py` | 8/8 subject models + `MoulinetteAnsweredQuestion`, `MoulinetteDataset` |
-| `src/__main__.py` | Fire with `index`, `search`, `search_dataset`, `evaluate`; `except Exception` catch-all active |
-| `src/evaluate.py` | `iou`, `recalling`, `evaluate` — correct numbers + validity check; labels off by one line (`task.md` 3.1) |
-| `src/rag_flow.py` | 0 bytes — planned `Generator` class (`task.md` 5.1) |
+| `src/__main__.py` | Fire with 6 commands; `ValidationError` / `Exception` → exit 1, Ctrl-C → 130 |
+| `src/evaluate.py` | `iou`, `recalling`, `evaluate` — correct numbers, labels fixed, validity check |
+| `src/augmentation.py` | `Augmentation`: reads source slices (per-file cache), builds system+user messages |
+| `src/generation.py` | `Generator`: Qwen3-0.6B, fp32 on CPU, greedy, `enable_thinking=False`, 128 new tokens |
+| `src/answer.py` | `answer`, `answer_dataset` (no partial save yet) |
 | `explaination.md` | how answer generation works, step by step, with reading links |
 | `Makefile` | `install run debug clean lint lint-strict` |
-| `pyproject.toml` | `bm25s`, `fire`, `pudb`, `pydantic`, `tqdm` |
+| `pyproject.toml` | `bm25s`, `fire`, `flake8`, `mypy`, `pudb`, `pydantic`, `torch`, `tqdm`, `transformers` |
 | `data/raw/vllm-0.10.1/` | corpus |
-| `data/datasets/{Unanswered,Answered}Questions/` | 2 files each: docs + code |
+| `data/datasets_public/public/{Unanswered,Answered}Questions/` | 2 files each — **subject wants `data/datasets/`** (task.md LATEST step 6) |
 | `.gitignore` | `/data/*` active — nothing under `data/` is tracked |
 
 ---
@@ -727,7 +777,7 @@ uv run python -m src search_dataset \
 Ranked best first; the same `file_path` may repeat with different ranges — one entry per chunk.
 **Budget:** 200 questions <= 90 s.
 
-## `evaluate` (works — labels fix pending, `task.md` 3.1)
+## `evaluate` (works)
 ```
 uv run python -m src evaluate --student_search_results_path <your output> \
                               --dataset_path <AnsweredQuestions file>
@@ -743,9 +793,9 @@ Ground truth adds `sources`, `answer`, `difficulty`, `is_valid`:
 @10`. Hit = same file **and** IoU >= 0.05, matched by `question_id` — never by list position.
 Valid = no retrieved source longer than `--max_context_length` (2000), as the moulinette checks.
 
-## `answer` / `answer_dataset` (to be written)
+## `answer` / `answer_dataset` (written; `answer` verified, full dataset run pending)
 ```
-uv run python -m src answer "<query>" --k 10
+uv run python -m src answer "<query>" --k 3
 uv run python -m src answer_dataset --student_search_results_path <out> --save_directory <dir>
 ```
 **In:** the `StudentSearchResults` file; source text fetched from the corpus by path + range.

@@ -11,14 +11,16 @@ class Generator:
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.model: Any = AutoModelForCausalLM.from_pretrained(
             self.model_name,
+            dtype=(torch.bfloat16 if torch.cuda.is_available()
+                   else torch.float32)
         )
         self.model.eval()
 
     def generate(
         self,
         msg: list[dict[str, str]],
-        max_new_tokens: int = 256
-    ) -> list[dict]:
+        max_new_tokens: int = 128
+    ) -> Any:
         """Return the msg from llm"""
 
         text = self.tokenizer.apply_chat_template(

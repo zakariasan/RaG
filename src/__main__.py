@@ -1,4 +1,7 @@
+import sys
+
 import fire
+from pydantic import ValidationError
 
 from .index import index
 from .search import (search, search_dataset)
@@ -16,7 +19,14 @@ if __name__ == '__main__':
                 'answer': answer,
                 'answer_dataset': answer_dataset
             })
+    except ValidationError as e:
+        print(f"Error404: invalid json/dataset: {e}")
+        sys.exit(1)
+
     except Exception as e:
         print(f"ERROR414: {e}")
+        sys.exit(1)
+
     except KeyboardInterrupt:
         print('KeyboardInterrupt -_-!')
+        sys.exit(130)

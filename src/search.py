@@ -15,45 +15,48 @@ from .models import (
 from .utils import ft_open
 
 
-def search(
+def retrieve(
     query: str = '',
     k: int = 10,
     save_directory: str = 'data/processed/',
     load_dir: str = 'chunks.json'
 ) -> list[MinimalSource]:
     """
-    Search for a query in the corpus of processed/chunks.json get the
+    Search helper for a query in the corpus of processed/chunks.json get the
     least top-K
     """
     if k <= 0:
         raise ValueError('K must be positive.')
-    if len(query) < 3:
-        raise ValueError('Good query can help us do the work.')
+
+    tokens = tokenizer(query)
+    if len(tokens) == 0:
+        raise ValueError('Empty query')
     try:
-        with open(
-            os.path.join(save_directory, load_dir),
-            encoding='utf-8'
-        ) as file:
-            chunks = json.load(file)
-
+        chunk_path = os.path.join(save_directory, load_dir)
+        chunks = json.loads(ft_open(chunk_path))
         retriever = bm25s.BM25.load(save_directory)
-        tokens = tokenizer(query)
-        if len(tokens) == 0:
-            raise ValueError('Empty query')
-        k = min(k, len(chunks))
-        res, _scores = retriever.retrieve([tokens], k=k, show_progress=True)
+    except OSError:
+        raise ValueError('Index Not found.')
+    k = min(k, len(chunks))
+    res, _scores = retriever.retrieve([tokens], k=k, show_progress=True)
+    return [
+        MinimalSource(**chunks[i]) for i in res[0]
+    ]
 
-        out = []
-        for i in res[0]:
-            c = chunks[i]
-            out.append(MinimalSource(**c))
-            print(
-                f"{c['file_path']} "
-                +
-                f"[{c['first_character_index']}:{c['last_character_index']}]")
-        return out
-    except (OSError):
-        raise ValueError('Index file not Found.')
+
+def search(
+    query: str = '',
+    k: int = 10,
+    save_directory: str = 'data/processed/',
+    load_dir: str = 'chunks.json'
+) -> None:
+    """
+    Search for a query in the corpus of processed/chunks.json get the
+    least top-K
+    """
+    for i in retrieve(query, k, save_directory, load_dir):
+        print(f"{i.file_path} "
+              f"[{i.first_character_index}:{i.last_character_index}]")
 
 
 def search_dataset(
@@ -66,21 +69,29 @@ def search_dataset(
 ) -> None:
     """search from the input datasets"""
 
+    if k <= 0:
+        raise ValueError("K must be positive.")
     try:
-
         ds = RagDataset.model_validate_json(ft_open(dataset_path))
         chunks = json.loads(ft_open(os.path.join(save_processed, saved_file)))
+        k = min(k, len(chunks))
         all_tokens = [tokenizer(q.question) for q in ds.rag_questions]
-        retriever = bm25s.BM25.load(save_processed)
-        res, _scores = retriever.retrieve(all_tokens, k=k)
-
+        keep = [i for i, t in enumerate(all_tokens) if t]
+        hits: dict[int, list[int]] = {}
+        if keep:
+            retriever = bm25s.BM25.load(save_processed)
+            res, _scores = retriever.retrieve(
+                [all_tokens[i] for i in keep],
+                k=k
+            )
+            hits = {qi: list(res[n]) for n, qi in enumerate(keep)}
         rows = []
         for i, q in enumerate(
             tqdm(
                 ds.rag_questions,
                 desc='Searching',
                 unit='question')):
-            srcs = [MinimalSource(**chunks[j]) for j in res[i]]
+            srcs = [MinimalSource(**chunks[j]) for j in hits.get(i, [])]
             rows.append(
                 MinimalSearchResults(
                     question_id=q.question_id,
