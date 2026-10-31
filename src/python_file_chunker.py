@@ -52,10 +52,10 @@ def chunk_nodes(
     return cuts
 
 
-def chunk_pfile(filename: str, max_size: int) -> list[tuple[int, int]]:
+def chunk_pfile(src_file: str, max_size: int) -> list[tuple[int, int]]:
     """ try to chunks a python file """
-    with open(filename, 'r', encoding='utf-8') as f:
-        src_file = f.read()
+    # with open(filename, 'r', encoding='utf-8') as f:
+    #    src_file = f.read()
     tree = ast.parse(src_file)
     line_offsets = get_offsets(src_file.splitlines(keepends=True))
     chunks = chunk_nodes(tree.body, 0, len(src_file),

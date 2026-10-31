@@ -9,7 +9,20 @@ from tqdm import tqdm
 from .models import MinimalSource
 from .python_file_chunker import chunk_pfile
 from .txt_file_chunker import chunk_txt_file
+from .txt_file_chunker import chunk_md_file
 from .utils import ft_open
+from markdown_chunker import MarkdownChunkingStrategy
+
+strategy = MarkdownChunkingStrategy(add_metadata=True)
+
+strategy = MarkdownChunkingStrategy(
+        min_chunk_len=100,
+        soft_max_len=1024,
+        hard_max_len=2000,
+        detect_headers_footers=True,
+        remove_duplicates=True,
+        add_metadata=True
+)
 
 
 def git_file() -> list[str]:
@@ -72,11 +85,13 @@ def index_machine(
 
     for fil in tqdm(files_work, desc='Chunking', unit=' file'):
         try:
-            if fil.endswith('.py'):
-                pairs = chunk_pfile(fil, max_size)
-            else:
-                pairs = chunk_txt_file(fil, max_size)
             src = ft_open(fil)
+            if fil.endswith('.py'):
+                pairs = chunk_pfile(src, max_size)
+            elif fil.endswith('.md'):
+                pairs = chunk_md_file(src, max_size, strategy)
+            else:
+                pairs = chunk_txt_file(src, max_size)
             for (start, end) in pairs:
                 minimal_src = MinimalSource(
                     file_path=fil,
