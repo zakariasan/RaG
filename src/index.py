@@ -88,8 +88,8 @@ def index_machine(
             src = ft_open(fil)
             if fil.endswith('.py'):
                 pairs = chunk_pfile(src, max_size)
-            elif fil.endswith('.md'):
-                pairs = chunk_md_file(src, max_size, strategy)
+            # elif fil.endswith('.md'):
+            #    pairs = chunk_md_file(src, max_size, strategy)
             else:
                 pairs = chunk_txt_file(src, max_size)
             for (start, end) in pairs:
