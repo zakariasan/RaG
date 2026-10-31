@@ -25,7 +25,7 @@ def retrieve(
     Search helper for a query in the corpus of processed/chunks.json get the
     least top-K
     """
-    if k <= 0:
+    if isinstance(k, bool) or not isinstance(k, int) or k <= 0 or k >= 100:
         raise ValueError('K must be positive.')
 
     tokens = tokenizer(query)

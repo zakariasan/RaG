@@ -28,17 +28,17 @@ def git_file() -> list[str]:
     return res
 
 
-def skip_file(path: str) -> bool:
-    """skip files in .gotignore"""
-    to_skip = git_file()
-    return path in to_skip
+# def skip_file(path: str) -> bool:
+#    """skip files in .gotignore"""
+#    to_skip = git_file()
+#    return path in to_skip
 
 
-def skip_folder(path: str) -> bool:
-    """skip folders ignored by git"""
-    path = path.split('/')[-1]
-    to_skip = git_file()
-    return path + '/' in to_skip
+# def skip_folder(path: str) -> bool:
+#    """skip folders ignored by git"""
+#    path = path.split('/')[-1]
+#    to_skip = git_file()
+#    return path + '/' in to_skip
 
 
 def is_ignored(name: str, patterns: list[str]) -> bool:
@@ -55,7 +55,6 @@ def index_machine(
     max_size: int
 ) -> tuple[list[MinimalSource], list[str]]:
     """machine that check if file can chunk it or no"""
-
     chunk_meta = []
     chunk_texts = []
     pattern = git_file()
@@ -67,7 +66,7 @@ def index_machine(
             if is_ignored(file, pattern):
                 continue
             else:
-                full_path = os.path.join(path, file)
+                full_path = os.path.normpath(os.path.join(path, file))
                 files_work.append(full_path)
 
     for fil in tqdm(files_work, desc='Chunking', unit=' file'):
@@ -114,29 +113,35 @@ def index(
 ) -> None:
     """Chunk file into chunks and index it depend on the chunk """
 
-    if max_chunk_size <= 0:
-        raise ValueError("max_chunk_size must be positive")
+    if max_chunk_size <= 0 or max_chunk_size > 2000:
+        raise ValueError("max_chunk_size must be positive from 1 to 2000")
 
     try:
 
         chunk_meta, txt = index_machine(files, max_chunk_size)
         os.makedirs(save_dir, exist_ok=True)
         chunks_path = os.path.join(save_dir, 'chunks.json')
+        if not chunk_meta:
+            raise ValueError('Somthing Wrong with chunks.json Rebuild again')
+
+        corpus_tokens = [
+            tokenizer(t) for t in tqdm(txt, desc='Tokenizing', unit=' chunk')]
+        # corpus_tokens = bm25s.tokenize(''.join(txt))
+
+        if not any(corpus_tokens):
+            raise ValueError('Tokenizer is empty Rebuild deleting old chunks')
+
         with open(chunks_path, 'w', encoding='utf-8') as file_opend:
             json.dump(
                 [item.model_dump() for item in chunk_meta],
                 file_opend,
                 indent=4
             )
+        retriever = bm25s.BM25()
+        retriever.index(corpus_tokens)
+        retriever.save(save_dir)
 
+        print(f"Ingestion complete! Indexed {len(chunk_meta)}", end='')
+        print(f" chunks under {save_dir}")
     except (OSError):
         raise ValueError("Extract Chunks probleme.")
-    corpus_tokens = [
-        tokenizer(t) for t in tqdm(txt, desc='Tokenizing', unit=' chunk')]
-    # corpus_tokens = bm25s.tokenize(''.join(txt))
-    retriever = bm25s.BM25()
-    retriever.index(corpus_tokens)
-    retriever.save(save_dir)
-
-    print(f"Ingestion complete! Indexed {len(chunk_meta)}", end='')
-    print(f" chunks under {save_dir}")
