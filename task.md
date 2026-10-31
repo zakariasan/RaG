@@ -1,22 +1,28 @@
 # task.md — what is left to do
 
-Updated 2026-10-31 after: swarm review (5 agents) + **official moulinette run** on HEAD
-`ae60ea3 Removing: markdown`. Done items were removed (history: `git log -p task.md`,
-`completed.md`). Line numbers = HEAD.
+Updated 2026-10-31 (2nd pass) on HEAD `39d381d`. Re-tested every part before bonus:
+lint, index, search, search_dataset, official moulinette, evaluate, answer, answer_dataset.
+Done items removed. Line numbers = HEAD `39d381d`.
 
-## Where we are now (measured on HEAD)
+## Where we are now (measured on `39d381d`)
 
 | Part | State |
 |---|---|
-| index | OK: 18738 chunks, ≤ 2000 chars, exact offsets, full coverage, 7.3 s (limit 300 s) |
-| search_dataset | OK: 200 questions in 1.1 s (limit 90 s), deterministic |
+| index | OK: 18738 chunks, ≤ 2000 chars, 7.7 s (limit 300 s) |
+| search_dataset | OK: 200 questions ~1 s (limit 90 s) |
 | **moulinette docs** | `Student data is valid: True`, R@1 0.540, R@3 0.760, **R@5 0.830** (need 0.80), R@10 0.880 |
 | **moulinette code** | `Student data is valid: True`, R@1 0.354, R@3 0.566, **R@5 0.657** (need 0.50), R@10 0.697 |
-| own `evaluate` | matches moulinette on public sets; wrong when questions are missing (see T10) |
-| answer / answer_dataset | answers correct and grounded on 3/3 tested; ~31–60 s per question on CPU |
-| markdown_chunker lib | removed in HEAD: good (it gave invalid offsets, 465 warnings, docs R@5 0.28) |
-| `make lint` | **FAIL**: mypy `src/generation.py:46` |
+| own `evaluate` | same numbers as moulinette on public sets; still wrong when questions are missing (T10) |
+| answer | OK: correct grounded answer in 23 s, now writes `StudentSearchResultsAndAnswer` JSON |
+| answer_dataset | OK on 2 questions (48 s): `Q:/A:` live print + `Processed 2 of 2 questions` |
+| `make lint` | **FAIL**: mypy `src/generation.py:46` (unchanged) |
 | moulinette `evaluate_student_answers` | prints nothing, rc 0, even for a garbage file: cannot grade answers locally |
+
+Fixed since last pass (verified):
+- `--max_chunk_size 2001` / `2000.5` rejected; `1` → clean error, old index kept.
+- `index --files /nonexistent` → clean error and the **old index stays intact** (103 chunks kept).
+- `./data/raw` → stored as `data/raw/...` (normpath).
+- `answer` writes JSON; `answer_dataset` prints progress + `Processed i of N`.
 
 Moulinette rules confirmed by crafted files:
 - one source of 2001 chars → `Student data is valid: False` (whole output rejected)
@@ -37,7 +43,7 @@ Run it again after each retrieval change:
 
 ## Mandatory — in order
 
-### T1 `[ ]` `make lint` green, with the subject's exact rule
+### T1 `[ ]` `make lint` green, with the subject's exact rule — nothing changed yet
 - `src/generation.py:46` mypy union-attr. Fix = your commented lines 51-53:
   `answer = self.tokenizer.decode(...)`, `if not isinstance(answer, str): raise TypeError(...)`,
   `return answer.strip()`, signature `-> str`.
@@ -47,66 +53,81 @@ Run it again after each retrieval change:
   `pyproject.toml` → `[tool.mypy]` `exclude = ['^data/', '^\.venv/']`.
 - Makefile: `uv run flake8 .`, `uv run mypy . ...`; `debug: uv run python -m pdb -m src`
   (`pudb` is not on PATH outside the venv); add `.PHONY`.
-- Commit the deletions of `test.py`, `test01.py` (already deleted in working tree);
-  also `git rm main.py mini_docs.json .mini_docs.json` (`main.py` fails mypy, untyped).
+- `git rm main.py mini_docs.json .mini_docs.json` (`main.py` fails mypy, untyped).
 - Check: `env -i PATH=/usr/bin:/bin:$HOME/.local/bin HOME=$HOME make lint` → rc 0.
 
-### T2 `[ ]` `--max_chunk_size` must be 1..2000 integer — `src/index.py:117`
-- `--max_chunk_size 999999` → rc 0, chunk of 22680 chars → moulinette **rejects everything**.
-- `1` crashes (`max() iterable argument is empty`: 1-char tokens dropped); `abc`, `2.5`,
-  `1e3`, `True` give cryptic errors.
+### T2 `[~]` `--max_chunk_size` — range done, type check missing — `src/index.py:116`
+- `--max_chunk_size abc` → `ERROR414: '<=' not supported between instances of 'str' and 'int'`.
+  `True` passes as 1. Add the type part:
   ```python
   if isinstance(max_chunk_size, bool) or not isinstance(max_chunk_size, int) \
           or not 0 < max_chunk_size <= 2000:
       raise ValueError("--max_chunk_size must be an integer in 1..2000")
   ```
 
-### T3 `[ ]` Failed `index` must not break the existing index — `src/index.py:120-139`
-- `chunks.json` is written (`:124`) before BM25 is built and saved (`:139`).
-- `index --files /nonexistent` → `chunks.json` = `[]`, old BM25 files stay → `search` then
-  prints **nothing, rc 0**. A partial run can leave chunks.json and BM25 with different
-  sizes → silently wrong sources or `list index out of range`.
-- `--files <single file>` fails the same way (`os.walk` on a file yields nothing).
-- Fix: `if not chunk_meta: raise ValueError(...)`; `if not any(corpus_tokens): raise ...`;
-  `retriever.save` first, write `chunks.json` last. In `search.py` after `BM25.load`:
+### T3 `[~]` Index safety — empty checks done, 3 gaps left — `src/index.py:118-147`
+- `chunks.json` is still written (`:134`) **before** `retriever.save` (`:142`). If BM25
+  fails or is interrupted, chunks.json and BM25 differ → silently wrong sources. Swap:
+  `retriever.index` + `retriever.save` first, then write `chunks.json`.
+- No check at load time. In `search.py` `retrieve` and `search_dataset`, after `BM25.load`:
   `if retriever.scores['num_docs'] != len(chunks): raise ValueError('Index mismatch, re-run index')`.
+- Messages are misleading: `/nonexistent` → `Somthing Wrong with chunks.json Rebuild again`
+  (real cause: no file found under `--files`). Use
+  `ValueError(f"No indexable files found under '{files}'")`. The `except OSError` →
+  `"Extract Chunks probleme."` hides the real error: use `f"Cannot write index: {e}"`.
+- `--files <single file>` (e.g. `lora.md`) → same "no files" error (`os.walk` on a file
+  yields nothing). Either support it (`if os.path.isfile(main_path): files_work = [main_path]`)
+  or say "--files must be a directory".
 
-### T4 `[ ]` Normalize paths — `src/index.py:70`
-- `index --files ./data/raw` → paths `./data/raw/...` → moulinette R@5 **0.000** (verified).
-- `full_path = os.path.normpath(os.path.join(path, file))`.
+### T4 `[~]` Paths — `./` fixed, absolute path still breaks grading — `src/index.py:69`
+- `index --files $PWD/data/raw/...` → stored `/home/zak/Desktop/RaG/data/raw/...`
+  → moulinette never matches. Use
+  `full_path = os.path.relpath(os.path.join(path, file))` (covers `./` and absolute).
 
-### T5 `[ ]` `answer` — `src/answer.py:17-27`
-- Index path hard-coded: `retrieve(query, k=k)` always reads `data/processed/`. Subject:
-  "All input and output paths must be configurable". Add `save_directory` param, pass it on.
-- Output is plain text. Subject VI.3: "produce structured JSON following the provided
-  pydantic models" → print a `MinimalAnswer` (`question_id`, `question`,
-  `retrieved_sources`, `answer`) with `model_dump_json(indent=4)`.
+### T5 `[~]` `answer` — JSON done, 4 problems left — `src/answer.py:19-56`
+- **Index dir still hard-coded**: `retrieve(query, k=k)` (`:28`) always reads
+  `data/processed/`. Add `index_dir: str = 'data/processed/'` and pass
+  `retrieve(query, k=k, save_directory=index_dir)`.
+- **Parameter order**: `save_directory` is 2nd, so `answer "question" 5` puts `5` in
+  `save_directory` (writes into a folder named `5`). Put `k` 2nd:
+  `answer(query, k=3, save_directory=..., index_dir=...)`.
+- `os.makedirs(save_directory)` (`:46`) runs **after** the model generated: a bad save
+  dir (`--save_directory <a file>`) → `[Errno 17] File exists` after 20–60 s of work.
+  Move `makedirs` to the top.
+- Default `data/output/search_results/query` mixes answers into the search-results tree;
+  use `data/output/search_results_and_answer/query`. `os.path.basename('student_...json')`
+  (`:48`) does nothing: use the plain string. The file is overwritten on each call: fine,
+  but say it in the README.
 
-### T6 `[ ]` `answer_dataset` safe long runs — `src/answer.py:30-77`
-- `os.makedirs(save_directory)` + path check only **after** the whole loop (`:69`): a bad
-  save dir fails after ~1 h. Move before `Generator()`.
-- No per-question `try/except`: one missing source file (`augmentation.py:18` `ft_open`)
-  aborts everything. Catch `OSError` per question, store an error answer, continue.
+### T6 `[~]` `answer_dataset` safe long runs — progress done — `src/answer.py:59-109`
+- `if k <= 0` only (`:67`): `--k 2.5`/`abc` → cryptic. Reuse the T8 check.
+- `os.makedirs` + path (`:101-104`) still **after** the whole loop: a bad save dir fails
+  after ~1 h. Move before `Generator()`.
+- No per-question `try/except`: one missing source → `ERROR414: [Errno 2] No such file or
+  directory: 'data/raw/nope.md'` and **nothing saved** (verified). Catch `OSError` per
+  question, store an error answer, continue.
 - No partial save / resume, Ctrl-C loses all: save every 10 rows + in `finally`;
   resume from the existing output file (skip done `question_id`s).
-- Subject VI.7.2 output shows `Processed 100 of 100 questions` → print it.
-- Output `k` (`:67`) copies the search k (10) while only `--k 3` sources are used:
-  decide and document.
+- `i` counter (`:80`) = `len(question_ans)`: drop it.
+- Output `k` (`:98`) copies the search k (10) while only `--k 3` sources are used and
+  `retrieved_sources` still lists 10: either store `question.retrieved_sources[:k]` and
+  `k=k`, or document it.
 
-### T7 `[ ]` Token budget — `src/augmentation.py`
-- Subject VI.3: "within its token budget". Measured prompt tokens: k=3 ≈ 750–1600,
-  k=50 ≈ 18–23k, k=200 ≈ 72–94k; Qwen3 limit 40960 → k ≥ ~100 overflows.
-- Count tokens with the Qwen tokenizer per source; stop adding sources at a budget
-  (e.g. 3000 tokens, keeps CPU time sane).
+### T7 `[ ]` Token budget — `src/augmentation.py` — new `k >= 100` limit is not a budget
+- `retrieve` now refuses `k >= 100`. That stops the worst overflow for `answer`, but it is
+  not a token budget (subject VI.3) and it also blocks `search --k 100`.
+- Measured prompt tokens: k=3 ≈ 750–1600, k=50 ≈ 18–23k, k=200 ≈ 72–94k; by linear
+  estimate (not measured) k=99 ≈ 36–47k → can still overflow Qwen3's 40960. Count tokens per source and stop adding at a
+  budget (e.g. 3000) in `Augmentation.read_sources`; remove the `k >= 100` rule.
 
-### T8 `[ ]` Fire argument types — `src/search.py:28-31` (+ `search_dataset`, `answer*`)
-- `search 123`, `search True`, `search "[1,2]"` → `expected string or bytes-like object`.
-- `--k 2.5` → `Partition index must be integer`; `--k abc` → `'<=' not supported...`.
-  ```python
-  if isinstance(k, bool) or not isinstance(k, int) or k <= 0:
-      raise ValueError('--k must be a positive integer')
-  query = str(query)
-  ```
+### T8 `[~]` Fire argument types — k type check done in `retrieve` only — `src/search.py:28`
+- **Wrong message**: `search --k 100` and `--k 2.5` both say `K must be positive.`
+  Say `--k must be an integer between 1 and 99` (or drop the upper limit, see T7).
+- **Inconsistent**: `search_dataset` has its own `if k <= 0` (`:72`): `--k 2.5` →
+  `Partition index must be integer`; `--k 100` accepted. Same check everywhere: one
+  helper `check_k(k)` in `utils.py`, used by `retrieve`, `search_dataset`, `answer_dataset`.
+- `search 123` / `True` / `"[1,2]"` → still `expected string or bytes-like object, got 'int'`.
+  Add `query = str(query)` at the top of `retrieve`.
 - Unknown flag (`search lora --bogus 1`) runs the command fully, then rc 2. For
   `answer_dataset` = 1 h wasted. Optional: check `--flags` against
   `inspect.signature(cmd).parameters` before `fire.Fire`.
@@ -214,14 +235,18 @@ Run it again after each retrieval change:
 - Fire limit: ~1500-word query → `Parser stack overflowed` (document it).
 
 ### T14 `[ ]` Dead code
-- `skip_file` / `skip_folder` (`index.py`), `g_checker` param (`evaluate.py`), `src_file`
+- `skip_file` / `skip_folder` are now **commented out** (`index.py:31-41`) instead of
+  deleted: delete them (git keeps history).
+- `g_checker` param (`evaluate.py`), `src_file`
   param of `chunk_nodes`, commented-out lines. `chunk_txt_file(filename)` now receives the
   content → rename the parameter.
 - Empty non-`.py` file → `[0:0]` chunk (`.gitkeep`): return `[]` on empty text.
 
 ### T15 `[ ]` README sync (after the code changes)
+- `answer` row: add `--save_directory` (now exists) and the index-dir option from T5;
+  say the answer JSON file name `student_search_result_and_answer.json`.
 - Options table misses `search --load_dir`, `search_dataset --saved_file`, `evaluate --k`;
-  add `answer --save_directory` (T5). Pick one name for the index dir
+  Pick one name for the index dir
   (`--save_dir` / `--save_directory` / `--save_processed` today).
 - Update chunking section (T9) and recall tables after T9/T16.
 
