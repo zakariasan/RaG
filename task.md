@@ -1,803 +1,283 @@
 # task.md — what is left to do
 
-> **LATEST — 2026-10-23 (read this first).** Sections below this box are the older detailed
-> plan; where they disagree with this box, **this box wins**. Full test runbook: `test.md`.
+Updated 2026-10-31 after: swarm review (5 agents) + **official moulinette run** on HEAD
+`ae60ea3 Removing: markdown`. Done items were removed (history: `git log -p task.md`,
+`completed.md`). Line numbers = HEAD.
 
-## Where we are now
+## Where we are now (measured on HEAD)
 
 | Part | State |
 |---|---|
-| index | `[x]` 18 738 chunks, ≤ 2000 chars, offsets exact, ~7 s |
-| search / `retrieve` | `[x]` returns `list[MinimalSource]`, prints once, CLI starts in ~1.4 s (was 22–46 s) |
-| search_dataset | `[x]` k ≤ 0 rejected, k capped, empty dataset OK, junk question → 0 sources (keep/hits) |
-| evaluate | `[x]` docs R@5 0.830, code R@5 0.657, missing file → rc=1 |
-| answer | `[x]` correct + grounded (`/v1/load_lora_adapter`), fp32, k=3, 128 tokens, ~172 s on this throttled laptop |
-| answer_dataset | `[~]` code OK (k check, lazy import) — **never run to completion; no partial save / resume; no `Processed i of N` print** |
-| error handling | `[x]` `ft_open` raises, `__main__` exits 1 / 130 — `[~]` ValidationError still prints `Error404` + 3-line dump |
-| `make lint` | `[~]` **1 error**: `src/search.py:16 F401 'typing.Any' imported but unused` — delete the line |
-| subject `lint` rule | `[ ]` subject says `flake8 .` / `mypy .` — needs `.flake8` + mypy exclude first |
-| layout | `[ ]` datasets must be `data/datasets/{Unanswered,Answered}Questions/` |
-| code search file | `[ ]` `data/output/.../dataset_code_public.json` still k=5 → regenerate `--k 10` |
-| moulinette | `[ ]` never run |
-| Markdown chunker | `[ ]` same splitter as plain text → not "two distinct strategies" |
-| docstrings PEP 257 | `[ ]` many missing / typos |
-| README | `[ ]` only the login line |
-| bonus | `[ ]` none (only after all above) |
-
-## Next steps (mandatory), in order
-
-1. `[ ]` delete `from typing import Any` in `search.py` → `make lint` green.
-2. `[ ]` `__main__.py`: `print(f"ERROR414: invalid JSON/dataset: {e.errors()[0]['msg']}", file=sys.stderr)`; all error prints to `sys.stderr`.
-3. `[ ]` `answer_dataset`: save every 10 rows (H2), resume (H3), `tqdm.write` each answer (H1), print `Processed {i} of {n} questions` (subject VI.7.2 step 4).
-4. `[ ]` token budget in `Augmentation` (subject VI.3 "within its token budget"): drop lowest-ranked source while prompt > ~1200 tokens.
-5. `[ ]` regenerate code search file `--k 10`; run full `answer_dataset` docs + code (overnight, charger on, `powerprofilesctl set performance`).
-6. `[ ]` layout `data/datasets/...` + defaults in `search.py`, `evaluate.py`; VI.7.2 commands verbatim.
-7. `[ ]` moulinette on both sets → `Student data is valid: True`.
-8. `[ ]` Markdown chunker (1.1) → re-evaluate docs ≥ 0.80.
-9. `[ ]` `.flake8` + Makefile `lint` = `flake8 .` / `mypy .` + `uv run`; remove `main.py test.py mini_docs.json .mini_docs.json`; dead code.
-10. `[ ]` docstrings (Google style) on every function/class.
-11. `[ ]` README (outline in `test.md` §7).
-12. `[ ]` bonus.
-
-## Explained: `keep` and `hits` in `search_dataset` (defense material)
-
-**Problem.** `bm25s.retrieve` takes a list of token lists and returns **one result row per
-list it received**. A question like `"a ?"` tokenizes to `[]` (1-char tokens dropped). Sending
-`[]` made BM25 hang, later it returned 10 random chunks (every score 0).
-
-```
-all_tokens = [ [],                         # q0 "a ?"  -> no tokens
-               ['load','lora','adapter'],  # q1
-               ['paged','attention'] ]     # q2
-```
-
-**Step 1 — `keep`: indices of questions that have tokens.**
-```python
-keep = [i for i, t in enumerate(all_tokens) if t]      # -> [1, 2]   ([] is falsy)
-```
-
-**Step 2 — send only those to BM25.**
-```python
-res, _ = retriever.retrieve([all_tokens[i] for i in keep], k=k)
-# input rows : [ tokens_q1, tokens_q2 ]
-# res rows   : [ row0,      row1      ]   <- row0 is q1, NOT q0
-```
-Row numbers have shifted. Using `res[i]` with the original index would give q1 the results of
-q2 and crash on q2 (IndexError).
-
-**Step 3 — `hits`: map each result row back to its original question.**
-```python
-hits = {qi: list(res[n]) for n, qi in enumerate(keep)}
-# enumerate(keep) -> (n=0, qi=1), (n=1, qi=2)   =>   hits = {1: row0, 2: row1}
-```
-`n` = position in BM25 output, `qi` = real question index.
-
-**Step 4 — loop over all questions, original order.**
-```python
-for i, q in enumerate(ds.rag_questions):
-    srcs = [MinimalSource(**chunks[j]) for j in hits.get(i, [])]
-# i=0 -> not in hits -> []        (junk question, honest 0 sources)
-# i=1 -> hits[1] -> q1's results
-# i=2 -> hits[2] -> q2's results
-```
-
-**Why it matters:** every `question_id` stays in the output in input order (file valid, the
-moulinette pairs every row); junk gets 0 sources, not random ones; no shift; empty dataset →
-`keep == []` → `if keep:` skips BM25, `hits == {}`, valid empty file. General pattern:
-*filter → process only valid items → map results back by original index.*
-
-## Explained: why `retrieve` returns `list[MinimalSource]`
-
-One function loads data (`chunks.json` + BM25) and turns BM25's numpy indices into objects.
-Every caller (`search` prints, `answer` builds the prompt) gets the same clean list: no
-`[0]`, no tuple, no numpy. Earlier bugs came from callers each re-doing this
-(`chunks=''` → k=0 → `[]` → model answered with **no context**; `res[0]` ints passed to
-`read_sources`). `search` returns `None`, so Fire stops printing every hit twice.
-
-## Speed — measured (details `test.md` §3)
-bf16 on this CPU (no bf16 hardware) never finished a question in 10 min → **fp32** fixed it.
-Prefill (reading the prompt) = 75–85 % of time; each source ≈ +450 tokens ≈ +12–20 s here.
-k=3 instead of 5: −27–38 %. "Answer in 1-3 sentences": 73 → 31 generated tokens. 2 threads best.
-
----
-
-Remaining work only, for every part of the project. How the system works and what is already
-done live in `completed.md`. Shell tests per part live in `checker.md` and `test.md`. How the
-LLM part works, with links to read more, lives in `explaination.md`.
-
-Legend: `[ ]` not started · `[~]` partial · **BLOCKER** = nothing after it can be measured.
-
----
-
-# Working rules
-
-- **I write all code.** Claude only reviews, explains and runs checks when asked — never edits
-  `src/`.
-- Before asking for a review, run the self-check below. Fix what it reports first.
-- Known-good numbers are the test: any change to indexing/search must keep docs R@5 **0.830**
-  and code R@5 **0.657**.
-
-## Self-check — run all four, in order
-
-```sh
-uv run flake8 src                      # style + undefined names + syntax errors
-make lint                              # flake8 + mypy with the subject flags (types)
-uv run python -m src evaluate          # docs: 0.540 / 0.760 / 0.830 / 0.880, valid True
-uv run python -m src evaluate \
-  --student_search_results_path data/output/search_results/UnansweredQuestions/dataset_code_public.json \
-  --dataset_path data/datasets_public/public/AnsweredQuestions/dataset_code_public.json
-                                       # code: 0.354 / 0.566 / 0.657 / ?, valid True
-```
-
-Prompt check (no model needed) — **passes today**:
-```sh
-uv run python -c "
-from src.search import search
-from src.augmentation import Augmentation
-q = 'What HTTP endpoint is used to dynamically load a LoRA adapter in vLLM?'
-a = Augmentation()
-a.read_sources(search(q, k=5))
-p = a.build_prompt(q)
-for m in p:
-    print('=====', m['role']); print(m['content'])
-c = p[1]['content']
-print('endpoint:', '/v1/load_lora_adapter' in c, '| question:', q in c)
-"
-```
-**Accept when:** roles `system`, `user` · sources numbered from 1 with their path · real chunk
-text under each · `Question: ...` last · last line prints `endpoint: True | question: True`.
-
----
-
-# A. `src/augmentation.py` — `[x]` works (checked 2026-10-22)
-
-Prompt check passes: 2 roles, 5 sources, ~8700 chars (~2200 tokens), endpoint and question
-present. flake8 clean. Leftovers, no rush:
-
-| # | Line | What | Fix |
-|---|---|---|---|
-| A11 | 36 | `Question:{query}` — no space | `Question: {query}` |
-| A12 | 15-16 | same file read once per chunk (`lora.md` read twice) | `cache: dict[str, str] = {}`; `if path not in cache: cache[path] = ft_open(path)` |
-| A13 | 8, 24 | docstrings `pipeLine`, `Build prom for the llm can give us ans` | `"""Turn retrieved sources into chat messages for the LLM."""` style |
-| A14 | 17 | label `file[1]: path` | `[1] path` is shorter and is what the system rule can refer to |
-
----
-
-# B. `src/generation.py` — `[x]` works (2026-10-23)
-
-Test B passed: `Hello! How can I assist you today?` — no `<think>`, no echoed prompt.
-First load 37.9 s (includes the 1.5 GB download, now cached in `~/.cache/huggingface/hub`);
-generation of a ~15-token prompt: 4.8 s. `make lint` clean.
-Leftover: the decode-check error message says "chat template".
-
-The steps below are kept as the reference for the defense.
-
-**What to write, in this order:**
-
-| Step | Where | What exactly |
-|---|---|---|
-| B1 | top of file | `import torch` and `from transformers import AutoModelForCausalLM, AutoTokenizer` |
-| B2 | `__init__` | `self.tok = AutoTokenizer.from_pretrained(name)` |
-| B3 | `__init__` | `self.model = AutoModelForCausalLM.from_pretrained(name)` then `self.model.eval()` |
-| B4 | `generate` signature | `def generate(self, msg: list[dict[str, str]], max_new_tokens: int = 256) -> str:` (bare `list[dict]` → fix the type) |
-| B5 | `generate` | `text = self.tok.apply_chat_template(msg, tokenize=False, add_generation_prompt=True, enable_thinking=False)` |
-| B6 | `generate` | `ids = self.tok(text, return_tensors='pt')` |
-| B7 | `generate` | inside `with torch.inference_mode():` → `out = self.model.generate(**ids, max_new_tokens=max_new_tokens, do_sample=False)` |
-| B8 | `generate` | `new = out[0][ids['input_ids'].shape[1]:]` — keep only the answer tokens |
-| B9 | `generate` | `return self.tok.decode(new, skip_special_tokens=True).strip()` |
-
-**Why each matters** (defense): B3 `eval()` turns off training behaviour · B5
-`enable_thinking=False` stops the `<think>` block · B7 `inference_mode` no gradients,
-`do_sample=False` same answer every run · B8 `generate` returns prompt + answer.
-
-**mypy note:** `transformers` has no complete type stubs; `decode` / `apply_chat_template` may
-come back as `Any` or a union. If `--warn-return-any` complains on B9, wrap: `str(...)`.
-
-**Test B alone** (first run downloads ~1.2 GB into `~/.cache/huggingface/hub`):
-```sh
-uv run python -c "
-import time
-from src.generation import Generator
-t = time.time(); g = Generator(); print('load', round(time.time() - t, 1), 's')
-t = time.time(); print(g.generate([{'role': 'user', 'content': 'Say hello in 5 words.'}]))
-print('gen', round(time.time() - t, 1), 's')
-"
-```
-**Accept when:** one short sentence · no `<think>` · no echoed prompt · write down load and gen
-times in `completed.md`.
-
-**Then test B + A together** (the real thing, one question):
-```sh
-uv run python -c "
-from src.search import search
-from src.augmentation import Augmentation
-from src.generation import Generator
-q = 'What HTTP endpoint is used to dynamically load a LoRA adapter in vLLM?'
-a = Augmentation(); a.read_sources(search(q, k=5))
-print(Generator().generate(a.build_prompt(q)))
-"
-```
-**Accept when:** the answer names `/v1/load_lora_adapter` (ground truth says so).
-
----
-
-# C. `answer` command — `[x]` works (2026-10-23), slow
-
-LoRA question → `The HTTP endpoint used to dynamically load a LoRA adapter in vLLM is
-`/v1/load_lora_adapter`.` — correct, grounded. Took minutes (see G). `search()` prints its 5
-hit lines before the answer (E). Leftover: docstring.
-
-| Step | What exactly |
-|---|---|
-| C1 | new function `answer(query: str = '', k: int = 5) -> None` (file: `generation.py` or a new `answer.py`) |
-| C2 | `sources = search(query, k=k)` |
-| C3 | `a = Augmentation(); a.read_sources(sources); msg = a.build_prompt(query)` |
-| C4 | `print(Generator().generate(msg))` |
-| C5 | register in `__main__.py`: `'answer': answer` |
-
-Test: `uv run python -m src answer "What HTTP endpoint is used to dynamically load a LoRA adapter in vLLM?" --k 5`
-Edge cases that must print one line, not traceback: `answer ""`, `answer "x" --k 0`.
-
----
-
-# D. `answer_dataset` command — `[~]` written, lints, not yet run to completion
-
-Code matches D1-D11 (parse with `StudentSearchResults`, one `Generator`, tqdm, write once
-after the loop, `k=questions.k`, subject's print texts). The 3-question test was **stopped
-after 10 min without finishing** — speed problem, not a code bug. Do G first, then re-run the
-3-question test. Leftovers: `unit=' Question'` → `'question'`, closing `)` indent at line 59,
-docstrings.
-
-| Step | What exactly |
-|---|---|
-| D1 | `answer_dataset(student_search_results_path: str = 'data/output/search_results/UnansweredQuestions/dataset_docs_public.json', save_directory: str = 'data/output/search_results_and_answer/UnansweredQuestions', k: int = 5) -> None` |
-| D2 | `data = StudentSearchResults.model_validate_json(ft_open(student_search_results_path))` — **no search, no index** |
-| D3 | `print(f'Loaded {len(data.search_results)} questions')` |
-| D4 | create `Augmentation()` and `Generator()` **once, before the loop** |
-| D5 | `for row in tqdm(data.search_results, desc='Answering', unit='question'):` |
-| D6 | inside: `a.read_sources(row.retrieved_sources[:k])`, `msg = a.build_prompt(row.question)`, `ans = g.generate(msg)` |
-| D7 | inside: `rows.append(MinimalAnswer(**row.model_dump(), answer=ans))` |
-| D8 | after loop: `out = StudentSearchResultsAndAnswer(search_results=rows, k=data.k)` |
-| D9 | `os.makedirs(save_directory, exist_ok=True)`; `path = os.path.join(save_directory, os.path.basename(student_search_results_path))` |
-| D10 | write `out.model_dump_json(indent=4)`; `print(f'Saved student_search_results_and_answer to {path}')` |
-| D11 | register in `__main__.py`: `'answer_dataset': answer_dataset` |
-
-**Why `[:k]` in D6:** the search files now hold 10 sources; 10 × ~550 tokens ≈ 5500 tokens per
-prompt = slow. 5 keeps R@5 = 0.830 and halves the time.
-
-**Test small first** — make a 3-question copy so a run takes a minute, not 30:
-```sh
-uv run python -c "
-import json
-p = 'data/output/search_results/UnansweredQuestions/dataset_docs_public.json'
-d = json.load(open(p)); d['search_results'] = d['search_results'][:3]
-json.dump(d, open('/tmp/mini_docs.json', 'w'))
-"
-uv run python -m src answer_dataset --student_search_results_path /tmp/mini_docs.json --save_directory /tmp/out
-uv run python -c "
-from src.models import StudentSearchResultsAndAnswer
-r = StudentSearchResultsAndAnswer.model_validate_json(open('/tmp/out/mini_docs.json').read())
-print(len(r.search_results), all(x.answer for x in r.search_results))
-"
-```
-**Accept when:** `3 True`. Then the full docs run (note the total time), then code.
-
-**D12 `[ ]` Check answers.** Compare 5-10 answers with the `answer` field in
-`data/datasets_public/public/AnsweredQuestions/dataset_docs_public.json`. Record in
-`completed.md`: time per question, one good and one bad answer, any prompt change you tried.
-
----
-
-# G. Speed — `[x]` G2 G3 G4 done + fp32 (2026-10-23, measured — see LATEST box); G5 token budget `[ ]`; G6 measured: 2 threads best
-
-**Why it is slow — the machine, measured:** Intel i7-7600U (2017 laptop), **2 cores / 4
-threads**, torch uses 2 threads, no GPU. "Say hello" (~15 prompt tokens) = 4.8 s. A real question
-= ~2200 prompt tokens (5 sources × ~2000 chars) + up to 256 answer tokens → minutes.
-
-Two costs (see `explaination.md` §5):
-- **prefill** — reading the prompt. Grows with prompt length → fewer/shorter sources.
-- **decode** — writing the answer, one full model pass per token → fewer answer tokens.
-
-Do **G1 first** so every later change is a measured number, not a guess.
-
-| # | Change | Where | Expected effect |
-|---|---|---|---|
-| G1 | **Measure.** In `generate`, time the call and print `prompt_tokens`, `new_tokens`, seconds: `ids['input_ids'].shape[1]` and `len(new)` | `generation.py` | tells you if prefill or decode dominates |
-| G2 | `max_new_tokens` 256 → **128** | `generation.py` default | decode capped at half |
-| G3 | System rule: *"Answer in 1 to 3 sentences."* | `augmentation.py` system content | model stops earlier on its own — real answers are 1-2 sentences |
-| G4 | **k = 3** instead of 5 in `answer` / `answer_dataset` | `answer.py` defaults | prompt ~40% shorter. Cost: right chunk in top 3 for 76% of docs questions vs 83% in top 5 — measure answer quality, not just time |
-| G5 | **Token budget**: count tokens with `self.tokenizer`, drop the lowest-ranked source **whole** while over e.g. 1500 tokens | `augmentation.py` (needs the tokenizer passed in) | caps worst-case prompts (some chunks are code = more tokens per char) |
-| G6 | Try `torch.set_num_threads(4)` once, compare with 2 | `generation.py` `__init__` | maybe faster, maybe slower (2 physical cores) — keep only if G1 says so |
-
-**Test after each change** — one question, compare with the G1 baseline:
-```sh
-time uv run python -m src answer "What HTTP endpoint is used to dynamically load a LoRA adapter in vLLM?"
-```
-Accept when: still names `/v1/load_lora_adapter`, and time drops. Record every row
-(change → prompt tokens → new tokens → seconds) in `completed.md` — that table is README
-*Performance analysis* material.
-
-**Running a full dataset anyway.** Even fast, 100 questions on this CPU is long. Run it detached
-and let it go overnight:
-```sh
-nohup uv run python -m src answer_dataset > answer_docs.log 2>&1 &
-tail -f answer_docs.log        # tqdm shows progress + time left
-```
-The subject relaxes answer quality because of the model; it does not set a time limit on
-`answer_dataset` (limits are on indexing 5 min and retrieval 90 s).
-
-Not worth it here: bf16/fp16 on this CPU (no native support → slower), batching (complex,
-little gain on 2 cores).
-**Measured 2026-10-23:** bf16 is what transformers 5 loads **by default** (checkpoint dtype) →
-a question never finished; `dtype=torch.float32` on CPU is mandatory here. int8 dynamic
-quantization: faster prefill but garbage output → rejected.
-
----
-
-# H. Live feedback and safe long runs — `[ ]` with / right after G
-
-None of these makes a single question faster (only G does). They make a long run **visible**
-(see each answer as it comes, stop early if bad) and **safe** (Ctrl+C or a crash loses nothing).
-
-## H1 `[ ]` Print each answer as soon as it is generated — `answer.py`, `answer_dataset`
-
-Inside the loop, right after `ans = g.generate(msg)`:
-```python
-tqdm.write(f'Q: {question.question}\nA: {ans}\n')
-```
-**Why `tqdm.write`, not `print`:** `print` breaks the progress bar into many lines;
-`tqdm.write` prints above the bar and redraws it.
-Optional: a `verbose: bool = True` parameter so the CLI can turn it off (`--verbose False`).
-**Accept when:** the 3-question test shows 3 Q/A blocks above one clean bar.
-
-## H2 `[ ]` Save as you go — `answer_dataset`
-
-Today the file is written once at the end → a stop at question 80 loses 80 answers.
-
-| Step | What exactly |
-|---|---|
-| H2.1 | compute `path` (and `os.makedirs`) **before** the loop, not after |
-| H2.2 | move the write into a small helper `save(rows, k, path)` that builds `StudentSearchResultsAndAnswer` and writes `model_dump_json(indent=4)` |
-| H2.3 | inside the loop: `if len(rows) % 10 == 0: save(rows, questions.k, path)` |
-| H2.4 | after the loop: `save(...)` once more (the last <10 rows) + the `Saved ...` print |
-
-**Why every 10, not every 1:** rewriting the whole file each question costs more as it grows;
-every 10 bounds the loss to 10 answers and the cost to 10 writes per 100 questions.
-**Accept when:** Ctrl+C after ~12 questions leaves a valid file with 10 answered rows.
-
-## H3 `[ ]` Resume after a stop — `answer_dataset` (needs H2)
-
-| Step | What exactly |
-|---|---|
-| H3.1 | before the loop: `if os.path.exists(path):` load it with `StudentSearchResultsAndAnswer.model_validate_json(ft_open(path))` |
-| H3.2 | `done = {r.question_id: r for r in old.search_results}`; start `rows = list(old.search_results)` |
-| H3.3 | in the loop: `if question.question_id in done: continue` |
-| H3.4 | `print(f'Resuming: {len(done)} already answered')` |
-| H3.5 | **wrap H3.1 in `try/except ValidationError`** — a half-written or old-format file must not crash; start fresh instead |
-| H3.6 | parameter `resume: bool = True`, so `--resume False` forces a fresh run |
-
-**Watch out:** output row order must stay the input order. Simplest: build the final list by
-walking `questions.search_results` and taking each answer from `done` or the new result.
-**Accept when:** stop at 12, re-run → prints `Resuming: 10 already answered`, the bar starts at
-10/100, final file has 100 rows in input order.
-
-## H4 `[ ]` Stream the words — `generation.py`, used by `answer` only
-
-```python
-from transformers import TextStreamer
-streamer = TextStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
-out = self.model.generate(**ids, streamer=streamer, max_new_tokens=..., do_sample=False)
-```
-- Add a parameter `stream: bool = False` to `generate`; pass `streamer` only when `True`.
-- `answer` calls `generate(msg, stream=True)` and **does not print the return value again**
-  (the streamer already printed it).
-- `answer_dataset` keeps `stream=False` — streaming would fight with the tqdm bar.
-**Accept when:** words appear one by one on `answer "..."`, total time unchanged.
-
-## H5 `[ ]` Interactive mode — new command `chat` (optional, good for the defense demo)
-
-Every `answer` call reloads the index and the model. A loop loads both once:
-
-| Step | What exactly |
-|---|---|
-| H5.1 | `chat(k: int = 3) -> None` in `answer.py`; create `Augmentation()` and `Generator()` once |
-| H5.2 | `while True: q = input('answer> ').strip()` |
-| H5.3 | `if q in ('', 'exit', 'quit'): break` |
-| H5.4 | `search` → `read_sources` → `build_prompt` → `generate(msg, stream=True)` |
-| H5.5 | catch `ValueError` from `search` (short/empty query) per question: print it, keep looping |
-| H5.6 | `EOFError` (Ctrl+D) → break cleanly |
-| H5.7 | register `'chat': chat` in `__main__.py` |
-
-**Accept when:** 3 questions in a row, the model loads once, `exit` and Ctrl+D both quit
-without a traceback.
-
----
-
-# E. Polish — `[ ]` after D (details in 3.2, 6.3-6.6)
-
-- `evaluate.py`: type `truth`, drop unused `g_checker`, `.get()`, catch `ValidationError`,
-  delete commented lines, fix typos.
-- Regenerate the **code** search file at `--k 10`, re-run evaluate (R@5 must stay 0.657).
-- `search()` prints per hit — move the print into the CLI path so `answer` output is clean.
-- Dead code (6.3), docstrings (6.4, 6.5), edge cases (6.6).
-
-# F. Before the defense — `[ ]`
-
-- `.flake8` config (3.5.6).
-- Moulinette (4): unzip `~/Downloads/RAG/moulinette.zip`, run on docs and code, see
-  `Student data is valid: True`.
-- README, 10 sections (8).
-
----
-
-# Status in one line
-
-(Old line, superseded by the LATEST box.) Retrieval verified: docs R@5 **0.830**, code R@5
-**0.657**. index, search, search_dataset, evaluate, models, augmentation, generation, answer done.
-**Now: answer_dataset save/resume + full runs, then layout, moulinette, Markdown chunker, README.**
-
----
-
-# 0. Done — see `completed.md` section 6.5
-
-**0.1 `[x]` Catch-all active in `__main__.py`.** `except Exception` prints `ERROR414: ...`,
-`except KeyboardInterrupt` stays its own clause (it derives from `BaseException`).
-
----
-
-# 1. Indexing — what remains
-
-**1.1 `[ ]` A real Markdown strategy.** `txt_file_chunker.chunk_txt_file` is a 4-line wrapper
-around `hard_split`, so today both code paths end in the same line-splitter — one strategy
-wearing two hats. The subject names exactly two distinct strategies (line 207).
-
-Approach: heading offsets with `re.finditer(r'^#{1,6} .*$', text, re.M)`, each
-heading-to-next-heading span as a unit, merge consecutive small units up to `max_chunk_size`,
-`hard_split` any single oversized section. Same merge logic as `chunk_nodes`, headings in place
-of AST nodes.
-**Watch out:** never split inside a fenced code block — a ``` fence opening in one chunk and
-closing in another gives the LLM unusable context.
-**Accept when:** `evaluate` shows docs R@5 >= 0.830. If it drops, keep the simple version and
-say so in the README — a measured negative result is a legitimate finding.
-
-**1.2 `[ ]` Blank lines slip through `git_file()`.** An empty line in `.gitignore` becomes the
-pattern `''`. Harmless today, but filter it out.
-
-**1.3 `[ ]` `except (FileNotFoundError)` in `git_file()` should be `except OSError` — a
-missing file is not the only way reading `.gitignore` can fail.
-
-**1.4 `[ ]` `sorted()` on files and folders in `index_machine`.** Not needed now (index and
-`chunks.json` are written in the same walk), but it is a prerequisite for the incremental
-indexing bonus.
-
----
-
-# 2. Retrieval — what remains
-
-**2.1 `[x]` Type hints** on `save_processed` and `saved_file` — done.
-
-**2.2 `[x]` Empty-query case in `search_dataset`** — done 2026-10-23 with `keep`/`hits` (LATEST box). The tokenizer drops 1-character tokens, so
-`"a b ?"` tokenizes to `[]`. Behaviour must be an empty `retrieved_sources`, not a crash from
-`bm25s`. Subject line 464 tests degenerate inputs.
-
-**2.3 `[~]` Wrap the dataset parse in `try/except ValidationError`** (caught in `__main__`, message still 3 lines + `Error404`) for a clean message on a
-malformed dataset instead of a pydantic traceback.
-
-**2.4 `[x]` Use `ft_open`** (done; `ft_open` now raises OSError instead of swallowing it) in `search_dataset` instead of `open(...).read()` — it is imported
-in `search.py` for exactly this.
-
----
-
-# 3. `evaluate` — `[x]` works, polish later
-
-Output verified 2026-10-22, correct labels, 3 decimals:
-```
-docs   R@1 0.540   R@3 0.760   R@5 0.830   R@10 0.880   valid True  100 q
-code   R@1 0.354   R@3 0.566   R@5 0.657   R@10 0.657   valid True   99 q
-```
-
-## 3.2 `[ ]` Polish (no score change) — "make it perfect later"
-
-- `recalling(..., truth)` — `truth` has no type → `make lint` fails with `no-untyped-def`.
-  Annotate `dict[str, MoulinetteAnsweredQuestion]` (import it).
-- `g_checker` parameter of `recalling` is now unused — drop it.
-- `truth[question.question_id]` → `.get()` + `continue` on `None` (no `KeyError` on unknown id).
-- Catch `pydantic.ValidationError` next to `OSError` (import it).
-- Delete `# print(questions)`, `# from tqdm import tqdm`; typo `SOmthing`; `iou` docstring
-  ("march of hard chunk…" → "Intersection over Union of two character ranges").
-- Header `"Evaluation Results \n ===="` — stray space before `====`.
-- **Code search file is still `k=5`** — regenerate with `--k 10` (3.5.2), then R@10 for code is real.
-
----
-
-# 3.5 Fix all of this BEFORE running the moulinette
-
-Nothing here changes a score. All of it changes whether the moulinette accepts the output.
-
-## 3.5.1 `[x]` `search_dataset` default path case — fixed (`public`)
-
-```python
-    'data/datasets_public/Public/UnansweredQuestions/dataset_docs_public.json',
-```
-The directory is **`public`**, lowercase. Linux filesystems are case-sensitive, so this is a
-`FileNotFoundError` on the next run. `evaluate` has it right; `search_dataset` does not.
-
-## 3.5.2 `[~]` `--k 10` — default changed, docs regenerated (k=10); **code file still k=5**
-
-`search_dataset` still defaults to `k: int = 5`. Subject line 507 uses `--k 10` in its own
-example, and line 553 says the moulinette *"reports recall at several values of k"* — it reports
-from **your file**; it does not retrieve anything itself. With 5 sources per row its @10 is
-capped at your @5, so you would be reporting a @10 that is not real.
-
-Free to change: BM25 ranking is deterministic, so the top 5 of a top-10 run is identical to a
-top-5 run. The thresholds are **@5** (docs 0.80, code 0.50) and cannot move.
-
-**Do:** default `k` to 10, regenerate both files, re-run `evaluate`. R@5 must still read 0.830
-and 0.657. If it moves, something else broke.
-
-## 3.5.3 `[x]` `max_context_length` as the validity check — done
-
-`evaluate` now prints `Student data is valid: True` on both datasets (0 sources over 2000
-characters), plus the question counts, mirroring the moulinette's header.
-
-## 3.5.4 `[ ]` `evaluate` cosmetics — moved to 3.2
-
-## 3.5.5 `[x]` `lint-strict` now runs `mypy src --strict` — fixed
-
-```make
-lint-strict:
-	flake8 src
-	mypy . --strict
-```
-`mypy .` walks `data/raw/vllm-0.10.1/` — the whole vLLM source tree. Make it `mypy src --strict`.
-`lint` is already correct (`flake8 src` / `mypy src`).
-
-## 3.5.6 `[ ]` No flake8 config
-
-There is no `.flake8`, `setup.cfg` or `tox.ini`. `flake8 src` works because the Makefile names
-the directory, but bare `flake8 .` walks the corpus and never finishes (it blew past 120 s).
-Cheap insurance:
-```ini
-[flake8]
-exclude = .git,__pycache__,.venv,data,build,dist
-max-line-length = 79
-```
-
----
-
-# 4. Validate against the moulinette — not started
-
-**Do section 3.5 first.** The executable is **not in the repo** — get it from the subject
-attachments, rename `moulinette-ubuntu` / `moulinette-fedora` to `moulinette`, `chmod +x`.
-```sh
+| index | OK: 18738 chunks, ≤ 2000 chars, exact offsets, full coverage, 7.3 s (limit 300 s) |
+| search_dataset | OK: 200 questions in 1.1 s (limit 90 s), deterministic |
+| **moulinette docs** | `Student data is valid: True`, R@1 0.540, R@3 0.760, **R@5 0.830** (need 0.80), R@10 0.880 |
+| **moulinette code** | `Student data is valid: True`, R@1 0.354, R@3 0.566, **R@5 0.657** (need 0.50), R@10 0.697 |
+| own `evaluate` | matches moulinette on public sets; wrong when questions are missing (see T10) |
+| answer / answer_dataset | answers correct and grounded on 3/3 tested; ~31–60 s per question on CPU |
+| markdown_chunker lib | removed in HEAD: good (it gave invalid offsets, 465 warnings, docs R@5 0.28) |
+| `make lint` | **FAIL**: mypy `src/generation.py:46` |
+| moulinette `evaluate_student_answers` | prints nothing, rc 0, even for a garbage file: cannot grade answers locally |
+
+Moulinette rules confirmed by crafted files:
+- one source of 2001 chars → `Student data is valid: False` (whole output rejected)
+- paths with `./` prefix → R@5 0.000
+- 50 of 100 questions answered → R@5 0.460 (missing questions count 0)
+- zero-width source → still valid
+
+Run it again after each retrieval change:
+
+```bash
 ./moulinette evaluate_student_search_results \
-  data/output/search_results/UnansweredQuestions/dataset_docs_public.json \
-  data/datasets_public/public/AnsweredQuestions/dataset_docs_public.json \
-  --k 10 --max_context_length 2000
-```
-**Look for `Student data is valid: True` before trusting any number.** Do this **before**
-starting on Qwen: a format mistake invalidates every output file, and one chunk wider than 2000
-characters invalidates the whole run. Never import or call the moulinette from our code.
-
----
-
-# 5. Answer generation — not started, biggest remaining piece
-
-**Read `explaination.md` first** — what `torch`/`transformers` do, the 8 steps on a real
-question, the class design, the speed table, links.
-
-Budget real time: ~1.2 GB weights download on first run, then roughly 5–20 s per question on
-this CPU (no GPU, 19 GB RAM) → 10–30 min per 100-question dataset.
-
-Two files, two stages (`rag_flow.py` deleted):
-- **`src/augmentation.py`** — sources → prompt messages. No model. `[~]` in progress, list A.
-- **`src/generation.py`** (to create) — messages → answer. Holds Qwen.
-
-**5.0 `[x]` Dependencies.** `torch 2.14.1` + `transformers 5.20.2` in `pyproject.toml`, import
-works. Note: the installed torch is the **CUDA build** (`+cu130`, `.venv` 5.7 GB, NVIDIA libs)
-on a machine with no GPU — works, but optional switch to the CPU index
-(`explaination.md` §1) makes `uv sync` far lighter for the reviewer.
-Qwen weights **not downloaded yet** (`~/.cache/huggingface/hub` absent) — first
-`from_pretrained` pulls ~1.2 GB; do it on a good connection.
-
-**About `llm_sdk`** (deleted from the repo): it only offers `encode`/`decode`/
-`get_logits_from_input_ids` — no `generate()`, no chat template, no KV cache. A token loop on
-top of it re-runs the whole prompt per token (~100-200× more work than `generate`). Decision:
-reuse its **loading** logic (device pick, dtype, `eval()`, no grad), generate with
-`transformers` directly. Be ready to say this at the defense.
-
-**5.1 `[~]` `Augmentation` class — `src/augmentation.py`.** See list **A** at the top.
-
-| Method | Does |
-|---|---|
-| `__init__()` | settings only (later: tokenizer for the budget) — no per-question state needed |
-| `read_sources(sources: list[MinimalSource], question: str)` | `ft_open(path)[first:last]` per source, numbered `[1] path`, cached per file |
-| `build_prompt() -> list[dict[str, str]]` | `[{"role": "system", "content": RULES}, {"role": "user", "content": sources + "Question: ..."}]` |
-
-Sources come **from the caller**: `search(q)` for `answer`, `row.retrieved_sources` for
-`answer_dataset`. That is why `read_sources` must not call `search` itself.
-
-**5.2 `[ ]` First milestone — print the prompt, no model.** Use the "Prompt check" command in
-the Working rules section. Only then load Qwen.
-
-**5.2b `[ ]` `Generator` class — `src/generation.py`.**
-
-| Method | Does |
-|---|---|
-| `__init__(model_name='Qwen/Qwen3-0.6B')` | load tokenizer + model **once**, `model.eval()` |
-| `generate(messages) -> str` | `apply_chat_template(..., enable_thinking=False)` → tokenize → `generate` in `torch.inference_mode()` → decode new tokens only |
-
-Test alone first:
-```sh
-uv run python -c "
-from src.generation import Generator
-g = Generator()
-print(g.generate([{'role': 'user', 'content': 'Say hello in 5 words.'}]))
-"
-```
-Accept when: a short sentence, no `<think>`, no echoed prompt. Note the time it takes.
-
-**5.3 `[ ]` Prompt shape.**
-- System: answer **only** from the provided sources; say so if they do not contain the answer;
-  be short; quote names/endpoints/flags exactly.
-- User: `[1] <file_path>\n<text>` … then `Question: <question>`.
-- Wrap with `tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True,
-  enable_thinking=False)`.
-
-**5.4 `[ ]` Generation settings.**
-- `enable_thinking=False` — otherwise Qwen3 writes a long `<think>` block first.
-- `do_sample=False` (greedy, reproducible), `max_new_tokens` ≈ 256.
-- `with torch.inference_mode():` around `generate`.
-- Decode `out[0][prompt_len:]` with `skip_special_tokens=True` — `generate` returns prompt + answer.
-
-**5.5 `[ ]` Context budget.** Count tokens with the model's tokenizer; target ~2–3k for the
-sources. Over budget → **drop the lowest-ranked source whole**, repeat. Never truncate mid-source.
-Start with top 5 (R@5 = 0.830 already); try 3 vs 5 and keep the faster one if answers hold.
-
-**5.6 `[ ]` `answer "<query>" --k`** — `search(q)` → `Augmentation` → `Generator.generate()` → print.
-
-**5.7 `[ ]` `answer_dataset --student_search_results_path --save_directory`**
-- Read the `StudentSearchResults` file from `search_dataset` — **not** the index, no retrieval.
-- Print `Loaded <n> questions`.
-- One `Generator`, then a **tqdm** loop: `MinimalAnswer(**row.model_dump(), answer=...)`.
-- Write `StudentSearchResultsAndAnswer(search_results=rows, k=data.k)` to
-  `<save_directory>/<same input basename>`, `os.makedirs(..., exist_ok=True)`.
-- Print `Saved student_search_results_and_answer to <path>`.
-- Output scope: `data/output/search_results_and_answer/UnansweredQuestions/`.
-
-**5.8 `[ ]` Register `answer` and `answer_dataset`** in `__main__.py`.
-
-**5.9 `[ ]` Check answers.** For 5–10 questions compare with the ground-truth `answer` field in
-`AnsweredQuestions/`. Note in `completed.md`: time per question, prompt variants tried, one good
-and one bad example (README material).
-
-**Accept when:** answers are coherent, grounded in the retrieved sources, and on point; the
-output file parses back as `StudentSearchResultsAndAnswer` with an `answer` on every row. The
-subject relaxes this bar because of the model's size; retrieval and prompt strategy carry the
-weight.
-
----
-
-# 6. Code quality — what remains
-
-**6.1 `[x]` Type hints on every function** — `mypy src` with the subject's flags reports
-`Success: no issues found in 10 source files`. See `completed.md` 6.7 for what the 20 errors
-actually were.
-
-**6.2 `[x]` flake8 clean** on `src` — all 7 findings gone.
-
-**6.3 `[ ]` Dead code still present.**
-
-| File | Dead |
-|---|---|
-| `src/index.py:30` | `skip_file` — superseded by the pattern-based `is_ignored` |
-| `src/index.py:36` | `skip_folder` — same |
-| `src/index.py` | the commented `bm25s.tokenize` line, the two commented lines at the end of `index_machine` |
-| `src/evaluate.py:4` | `# from tqdm import tqdm` |
-| `src/evaluate.py:22` | the commented `g_checker.rag_questions[...]` line |
-| `src/search.py` `search()` | prints one line per hit — fine for the CLI, noisy when `answer` calls it; move the print to the command later |
-| `main.py` | `print("Hello from rag!")`, the `uv init` leftover; the entry point is `python -m src` |
-
-flake8 does not flag commented-out code or an empty module, but the defense will ask what each
-one is for.
-
-**6.4 `[ ]` PEP 257 docstrings, and fix the typos:** `igonore`, `waht`, `breakk`, `probleme`,
-`opend`, `march of hard chunk and overload` (in `iou` — it computes Intersection over Union),
-`racll`. (`Moulinet` → `Moulinette` — done.)
-
-**6.5 `[ ]` `chunk_nodes` has no docstring.** It is the most complex function in the project.
-
-**6.6 `[~]` Re-check every command's edge cases** — 2026-10-23 retest: all rc=1 one line except ValidationError (3 lines). Full list in `test.md` §4. None may traceback: empty query, nonsensical
-query, `k=0`, negative `k`, missing file, malformed JSON, missing index. The catch-all in
-`__main__.py` is active now, so these print one line — verify each actually does.
-
----
-
-# 7. Makefile — one line left
-
-**7.1 `[x]` `run` passes `--max_chunk_size 2000`** explicitly — done.
-**7.2 `[x]` `lint` targets `src`** rather than `.` — done, and that is what makes it finish.
-**7.3 `[x]` `clean` does not touch `data/`** — correct, keep it that way.
-**7.4 `[-]` `lint-strict`** — optional in the subject, skipped by decision (2026-10-23).
-**7.5 `[ ]` `lint` must run `flake8 .` and `mypy .`** (subject V.2 says `.`, not `src`) — add
-`.flake8` `exclude = .git,__pycache__,.venv,data,.mypy_cache` and `[tool.mypy] exclude` in
-`pyproject.toml`, then switch; prefix tools with `uv run`.
-
----
-
-# 8. README — empty file, 0 bytes
-
-**First line, italic, exactly:**
-```
-*This project has been created as part of the 42 curriculum by <login>.*
+    data/output/search_results/UnansweredQuestions/dataset_docs_public.json \
+    data/datasets/AnsweredQuestions/dataset_docs_public.json \
+    --k 10 --max_context_length 2000
 ```
 
-**All 10 sections required (chapter VIII), English only:** Description · Instructions ·
-Resources **and how AI was used, per task** · System architecture · Chunking strategy ·
-Retrieval method · Performance analysis · Design decisions · Challenges faced · Example usage.
+---
 
-**Material already written, lift it from `completed.md`:**
+## Mandatory — in order
 
-| Section | Source in `completed.md` |
-|---|---|
-| Performance analysis | the two tables in 6.1 and 6.2 |
-| Chunking strategy | 3.3 and 3.4 |
-| Retrieval method | 3.5, 3.6 and 4 |
-| Design decisions | 6.4 (index everything) and 6.2 (own tokenizer over `bm25s.tokenize`), both with numbers |
-| Challenges faced | 7 — the IoU floor, the parallel-list invariant, the silent corruption |
-| System architecture | the data flow diagram in 2 |
+### T1 `[ ]` `make lint` green, with the subject's exact rule
+- `src/generation.py:46` mypy union-attr. Fix = your commented lines 51-53:
+  `answer = self.tokenizer.decode(...)`, `if not isinstance(answer, str): raise TypeError(...)`,
+  `return answer.strip()`, signature `-> str`.
+- Subject V.2: lint = `flake8 .` and `mypy .`. Today `mypy .` aborts
+  (`Duplicate module named "utils"` from `data/raw`) and `flake8 .` crawls `.venv`.
+  Add `.flake8` → `[flake8]` `exclude = .venv,.git,__pycache__,.mypy_cache,data`, and in
+  `pyproject.toml` → `[tool.mypy]` `exclude = ['^data/', '^\.venv/']`.
+- Makefile: `uv run flake8 .`, `uv run mypy . ...`; `debug: uv run python -m pdb -m src`
+  (`pudb` is not on PATH outside the venv); add `.PHONY`.
+- Commit the deletions of `test.py`, `test01.py` (already deleted in working tree);
+  also `git rm main.py mini_docs.json .mini_docs.json` (`main.py` fails mypy, untyped).
+- Check: `env -i PATH=/usr/bin:/bin:$HOME/.local/bin HOME=$HOME make lint` → rc 0.
+
+### T2 `[ ]` `--max_chunk_size` must be 1..2000 integer — `src/index.py:117`
+- `--max_chunk_size 999999` → rc 0, chunk of 22680 chars → moulinette **rejects everything**.
+- `1` crashes (`max() iterable argument is empty`: 1-char tokens dropped); `abc`, `2.5`,
+  `1e3`, `True` give cryptic errors.
+  ```python
+  if isinstance(max_chunk_size, bool) or not isinstance(max_chunk_size, int) \
+          or not 0 < max_chunk_size <= 2000:
+      raise ValueError("--max_chunk_size must be an integer in 1..2000")
+  ```
+
+### T3 `[ ]` Failed `index` must not break the existing index — `src/index.py:120-139`
+- `chunks.json` is written (`:124`) before BM25 is built and saved (`:139`).
+- `index --files /nonexistent` → `chunks.json` = `[]`, old BM25 files stay → `search` then
+  prints **nothing, rc 0**. A partial run can leave chunks.json and BM25 with different
+  sizes → silently wrong sources or `list index out of range`.
+- `--files <single file>` fails the same way (`os.walk` on a file yields nothing).
+- Fix: `if not chunk_meta: raise ValueError(...)`; `if not any(corpus_tokens): raise ...`;
+  `retriever.save` first, write `chunks.json` last. In `search.py` after `BM25.load`:
+  `if retriever.scores['num_docs'] != len(chunks): raise ValueError('Index mismatch, re-run index')`.
+
+### T4 `[ ]` Normalize paths — `src/index.py:70`
+- `index --files ./data/raw` → paths `./data/raw/...` → moulinette R@5 **0.000** (verified).
+- `full_path = os.path.normpath(os.path.join(path, file))`.
+
+### T5 `[ ]` `answer` — `src/answer.py:17-27`
+- Index path hard-coded: `retrieve(query, k=k)` always reads `data/processed/`. Subject:
+  "All input and output paths must be configurable". Add `save_directory` param, pass it on.
+- Output is plain text. Subject VI.3: "produce structured JSON following the provided
+  pydantic models" → print a `MinimalAnswer` (`question_id`, `question`,
+  `retrieved_sources`, `answer`) with `model_dump_json(indent=4)`.
+
+### T6 `[ ]` `answer_dataset` safe long runs — `src/answer.py:30-77`
+- `os.makedirs(save_directory)` + path check only **after** the whole loop (`:69`): a bad
+  save dir fails after ~1 h. Move before `Generator()`.
+- No per-question `try/except`: one missing source file (`augmentation.py:18` `ft_open`)
+  aborts everything. Catch `OSError` per question, store an error answer, continue.
+- No partial save / resume, Ctrl-C loses all: save every 10 rows + in `finally`;
+  resume from the existing output file (skip done `question_id`s).
+- Subject VI.7.2 output shows `Processed 100 of 100 questions` → print it.
+- Output `k` (`:67`) copies the search k (10) while only `--k 3` sources are used:
+  decide and document.
+
+### T7 `[ ]` Token budget — `src/augmentation.py`
+- Subject VI.3: "within its token budget". Measured prompt tokens: k=3 ≈ 750–1600,
+  k=50 ≈ 18–23k, k=200 ≈ 72–94k; Qwen3 limit 40960 → k ≥ ~100 overflows.
+- Count tokens with the Qwen tokenizer per source; stop adding sources at a budget
+  (e.g. 3000 tokens, keeps CPU time sane).
+
+### T8 `[ ]` Fire argument types — `src/search.py:28-31` (+ `search_dataset`, `answer*`)
+- `search 123`, `search True`, `search "[1,2]"` → `expected string or bytes-like object`.
+- `--k 2.5` → `Partition index must be integer`; `--k abc` → `'<=' not supported...`.
+  ```python
+  if isinstance(k, bool) or not isinstance(k, int) or k <= 0:
+      raise ValueError('--k must be a positive integer')
+  query = str(query)
+  ```
+- Unknown flag (`search lora --bogus 1`) runs the command fully, then rc 2. For
+  `answer_dataset` = 1 h wasted. Optional: check `--flags` against
+  `inspect.signature(cmd).parameters` before `fire.Fire`.
+
+### T9 `[ ]` Real Markdown chunker — subject VI.1 "two distinct chunking strategies"
+- Now `.md` uses the same line packing as any text file. Use structure instead:
+  sections at ATX headings **outside code fences**, oversize sections cut at paragraph
+  starts, `hard_split` fallback, greedy packing. Exact offsets, no library.
+- Measured in scratch with **exactly this code** (2026-10-31): docs R@1/3/5/10 =
+  0.63/0.81/**0.85**/0.87 (now 0.54/0.76/0.83/0.88), code R@5 0.667 (now 0.657),
+  178 md files, 0 coverage errors, max chunk 2000. Goes in `src/txt_file_chunker.py`
+  (`import re`), then `elif fil.endswith('.md'): pairs = chunk_md_file(src, max_size)`
+  in `index_machine`.
+  ```python
+  HEADING = re.compile(r' {0,3}#{1,6}\s')
+  FENCE = re.compile(r' {0,3}(```|~~~)')
+
+
+  def pack(pieces: list[tuple[int, int]],
+           max_size: int) -> list[tuple[int, int]]:
+      """Merge neighbouring ranges while the merged range fits max_size."""
+      out = [pieces[0]]
+      for s, e in pieces[1:]:
+          if e - out[-1][0] <= max_size:
+              out[-1] = (out[-1][0], e)
+          else:
+              out.append((s, e))
+      return out
+
+
+  def chunk_md_file(src_file: str, max_size: int) -> list[tuple[int, int]]:
+      """Chunk Markdown by sections (headings outside code fences).
+
+      A section too big is cut at paragraph starts, then hard_split,
+      then packed; finally neighbouring pieces are packed to max_size.
+      """
+      if not src_file:
+          return []
+      lines = src_file.splitlines(keepends=True)
+      offsets = get_offsets(lines)
+      heads = [0]
+      paras: list[int] = []
+      in_fence = False
+      for i, line in enumerate(lines):
+          if FENCE.match(line):
+              in_fence = not in_fence
+          elif not in_fence and i > 0:
+              if HEADING.match(line):
+                  heads.append(offsets[i])
+              elif not lines[i - 1].strip():
+                  paras.append(offsets[i])
+      heads.append(len(src_file))
+      pieces: list[tuple[int, int]] = []
+      for s, e in zip(heads, heads[1:]):
+          if e - s <= max_size:
+              pieces.append((s, e))
+              continue
+          cuts = [s] + [p for p in paras if s < p < e] + [e]
+          parts: list[tuple[int, int]] = []
+          for a, b in zip(cuts, cuts[1:]):
+              parts.extend(hard_split(a, b, offsets, max_size))
+          pieces.extend(pack(parts, max_size))
+      return pack(pieces, max_size)
+  ```
+- Check after: every chunk `0 <= s < e <= len`, contiguous, ≤ max; moulinette valid.
+
+### T10 `[ ]` `evaluate` = moulinette — `src/evaluate.py:26-40`
+- Divides by the student count, not the truth count: 50/100 questions → ours **0.920**,
+  moulinette **0.460** (verified).
+- Only `sources[0]` is scored; unknown id → raw `KeyError` (`ERROR414: 'zzz'`); `--k` unused.
+  ```python
+  got = {r.question_id: r.retrieved_sources for r in questions.search_results}
+  total = 0.0
+  for q in truth.values():
+      srcs = got.get(q.question_id, [])[:k]
+      found = sum(any(s.file_path == t.file_path and
+                      iou(s.first_character_index, s.last_character_index,
+                          t.first_character_index, t.last_character_index) >= 0.05
+                      for s in srcs) for t in q.sources)
+      total += found / len(q.sources) if q.sources else 0.0
+  return total / len(truth)
+  ```
+
+### T11 `[ ]` Layout VI.7.1 + regenerate outputs
+- Datasets are in `data/datasets_public/public/...`; subject layout is
+  `data/datasets/{UnansweredQuestions,AnsweredQuestions}/`. Move them, update defaults in
+  `search.py` and `evaluate.py`.
+- `data/output/search_results/UnansweredQuestions/dataset_code_public.json` is still
+  **k=5** → regenerate with `--k 10`.
+- `data/output/search_results_and_answer/` does not exist yet → full `answer_dataset`
+  on docs + code (long run, after T6).
+- Run the VI.7.2 walkthrough commands verbatim.
+
+### T12 `[ ]` Docstrings PEP 257 (subject V.1)
+- Missing: `chunk_nodes` (`python_file_chunker.py:5`), `answer_dataset` (`answer.py:30`),
+  classes `Augmentation`, `Generator`, all 11 models in `models.py`.
+- Existing ones: one-liners, typos (`igonore`, `.gotignore`, `breakk`, `waht`, `Clearify`,
+  `retreved`, `deppend`, `march of hard chunk`); add Args/Returns.
+
+### T13 `[ ]` Error messages
+- All errors to `sys.stderr`; one line for `ValidationError` (`e.errors()[0]['msg']`);
+  drop `Error404`/`ERROR414` labels; fix `Erro form serach dataset`, `SOmthing`,
+  `Extract Chunks probleme.`.
+- `search "zzqxv"` prints random zero-score hits: optional "no match" message.
+- Fire limit: ~1500-word query → `Parser stack overflowed` (document it).
+
+### T14 `[ ]` Dead code
+- `skip_file` / `skip_folder` (`index.py`), `g_checker` param (`evaluate.py`), `src_file`
+  param of `chunk_nodes`, commented-out lines. `chunk_txt_file(filename)` now receives the
+  content → rename the parameter.
+- Empty non-`.py` file → `[0:0]` chunk (`.gitkeep`): return `[]` on empty text.
+
+### T15 `[ ]` README sync (after the code changes)
+- Options table misses `search --load_dir`, `search_dataset --saved_file`, `evaluate --k`;
+  add `answer --save_directory` (T5). Pick one name for the index dir
+  (`--save_dir` / `--save_directory` / `--save_processed` today).
+- Update chunking section (T9) and recall tables after T9/T16.
 
 ---
 
-# 9. Tests — asked for, not graded
+## Recall — raise the margin (docs R@5 is only 0.03 above the bar)
 
-`[ ]` pytest over: chunk slices reconstruct a file exactly · no chunk exceeds the limit ·
-`tokenizer('getHTTPResponseCode')` splits as expected · `hard_split` rejects `max_size <= 0` ·
-each chunker handles an empty file, a one-line file, and a file with no trailing newline.
+### T16 `[ ]` Tokenizer — measured in scratch on public sets
+| Variant | docs@5 | code@5 |
+|---|---|---|
+| current | 0.830 | 0.657 |
+| + whole `snake_case` identifiers | 0.840 | 0.697 |
+| + file name tokens in every chunk | 0.830 | 0.747 |
+| **+ both + bm25s English stopwords** (re-verified) | **0.860** | **0.798** |
+| full path tokens / other k1,b / chunk 1000–1500 / down-weight .json | worse or same | |
 
----
+```python
+from bm25s.stopwords import STOPWORDS_EN
+STOP = set(STOPWORDS_EN)
+# in tokenizer, before the final filter:
+res += [w.lower() for w in re.findall(r'[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+', string)]
+return [t for t in res if len(t) > 1 and t not in STOP]
 
-# 10. Layout and git
+def path_tokens(path: str) -> list[str]:
+    """Tokens of the file name, added to every chunk of that file."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return tokenizer(stem) + [stem.lower()]
 
+# in index():
+corpus_tokens = [tokenizer(t) + path_tokens(m.file_path)
+                 for t, m in zip(txt, chunk_meta)]
 ```
-src/                                      runnable as python -m src              [x]
-pyproject.toml, uv.lock                   at root                                [x]
-README.md                                 at root                                [~] empty
-Makefile                                  install run debug clean lint           [x]
-data/raw/vllm-0.10.1/                     corpus                                 [x]
-data/processed/                           index output, 18 738 chunks            [x]
-data/datasets/{Unanswered,Answered}Questions/   [ ] today in data/datasets_public/public/ — move
-data/output/search_results/<Scope>/       docs k=10, code still k=5 → redo        [~]
-data/output/search_results_and_answer/<Scope>/                                   [ ]
-```
-`.gitignore` has `/data/*` active and `git ls-files data` returns nothing — **nothing under
-`data/` is tracked, which is correct.** Keep it that way: once a 100 MB blob is in history it
-stays there, and a later `git rm` does not shrink the repo. Verify with
-`git status --short` before any `git add`.
-
-`[ ]` Add `transformers` and `torch` when starting part 5 (task 5.0).
+Tuned on public sets only → expect a bit less on hidden ones. Re-run moulinette.
 
 ---
 
-# 11. Bonus — only after the mandatory part fully validates
+## Hypotheses (low risk, not proven)
+- 4 corpus files use `\r\n`; `open()` translates newlines → offsets count translated
+  text. None in public datasets.
+- Indexer filters with the cwd `./.gitignore` matched on folder names (`data`, `build`,
+  `dist`); no effect on vLLM 0.10.1, but depends on where you run it.
+- `max_new_tokens=128` may cut long answers (none cut in 4 runs).
 
-Subject chapter IX: graded **only** if the whole mandatory part validates; each is 1 point,
-must **work** (not just be described), may be demoed, CPU-only machine. Details in list **I**.
+## Not tested yet
+- Fresh `git clone` + `uv sync` on a disk with several GB free (`/tmp` too small here).
+- Full `answer_dataset` on 100 questions (~1 h).
 
-- `[ ]` I1 semantic embeddings (all-MiniLM-L6-v2) beside the lexical index
-- `[ ]` I2 hybrid retrieval, fusing the two rankings
-- `[ ]` I3 incremental indexing — needs 1.4 (`sorted()`) first
-- `[ ]` I4 caching: cold start and repeated queries
-- `[ ]` I5 local HTTP API
+## Optional — tests (not graded)
+`hard_split` bounds, `chunk_pfile` / md / txt coverage, tokenizer, index round-trip
+(empty corpus writes nothing, `./` normalized), `retrieve` edge cases, `search_dataset`
+output model, `evaluate` multi-source + missing questions, CLI no-traceback (subprocess),
+`answer_dataset` with mocked `Generator`.
 
 ---
 
-# I. Future enhancements — the full list, with how
-
-Two kinds: **I1-I5 = the 5 official bonuses** (points), **I6-I12 = quality** (no points by
-themselves, but they raise recall, answer quality or the defense). Every retrieval change is
-judged by `evaluate`: docs R@5 0.830 / code R@5 0.657 are the numbers to beat — keep a change
-only if it wins, and record it in `completed.md` either way (a measured "no" is a result).
+# Bonus — only after everything above (subject IX)
 
 ## I1 `[ ]` Bonus 1 — Semantic embeddings
 
@@ -881,75 +361,3 @@ Test: `curl 'http://127.0.0.1:8000/search?q=lora+adapter&k=3'` and
 **Bind to `127.0.0.1`**, not `0.0.0.0` — "local" API, and nothing on the network should reach
 a model server.
 
-## I6 `[ ]` Markdown chunker — same as 1.1 (mandatory-ish: two distinct strategies)
-
-Heading-based splitting, never inside a ``` fence. Keep only if docs R@5 ≥ 0.830. See 1.1.
-
-## I7 `[ ]` Prompt improvements (answer quality)
-
-- Tell the model the source numbers: *"Cite the source number like [2]."* — answers become
-  checkable at the defense.
-- Put the **highest-ranked source last**, next to the question (small models attend most to
-  the end of the prompt). Measure on the same 10 questions.
-- For code questions, add the language hint: *"Sources may be Python code."*
-- Keep a `PROMPT_VERSION = 'v1'` constant; bump it on every change (needed by I4.4).
-
-## I8 `[ ]` Answer evaluation (measure answers, not only retrieval)
-
-| Step | What exactly |
-|---|---|
-| I8.1 | command `evaluate_answers --answers_path ... --dataset_path ...` |
-| I8.2 | per question: word overlap between our answer and the ground-truth `answer` (lowercase tokens, `|ours ∩ truth| / |truth|`) |
-| I8.3 | print the mean, plus the 3 worst questions to read by hand |
-| I8.4 | use it to compare prompt versions (I7) and k=3 vs k=5 (G4) with a number |
-
-Crude, but turns "the answers look better" into a figure for the README.
-
-## I9 `[ ]` Retrieval tuning (cheap, measurable)
-
-- BM25 parameters: try `k1` ∈ {1.2, 1.5, 2.0}, `b` ∈ {0.5, 0.75, 0.9}; a loop over 9
-  combinations, `evaluate` each, keep the best. Record the grid in `completed.md`.
-- Re-try the `.py/.md/.rst/.txt` filter: 0.850 vs 0.830 docs (`completed.md` 6.2) — decide again
-  once everything else is fixed.
-- Boost the file path: add path tokens (`docs`, `features`, `lora`) to each chunk's tokens —
-  questions often name the feature that is also the file name.
-
-## I10 `[ ]` Tests — same as section 9
-
-pytest, run with `uv run pytest`; add a `test` rule to the Makefile. Start with
-`hard_split`, `tokenizer`, `iou`, chunk reconstruction.
-
-## I11 `[ ]` Robustness pass (the reviewer "pushes it in odd directions")
-
-Every command, each must print one line, never a traceback: empty query, 1-char query, `k=0`,
-`k=-1`, `k=100000`, missing index, missing dataset file, malformed JSON, dataset with 0
-questions, a question in another language, Ctrl+C during `answer_dataset` (with H2 the file
-must still be valid).
-
-## I12 `[ ]` Smaller wins
-
-- `search()` print → move to the CLI path (E).
-- `.flake8` config (3.5.6).
-- `make lint-strict` with `uv run` (7).
-- CPU-only torch wheel → `uv sync` GBs lighter for the reviewer (`explaination.md` §1).
-
----
-
-# Order of work
-
-1. **G** speed: G1 measure, then G2-G6 one at a time. *Current work.*
-   **H1** (print each answer) alongside — 1 line, makes every test readable.
-2. **H2 + H3** save as you go + resume. *Makes the long run safe.*
-3. **D** re-run the 3-question test, then the full datasets (overnight, `nohup`), D12 check
-   answers. **H4** streaming for `answer`.
-3. **3.2** `evaluate` polish + regenerate the code search file at `--k 10`.
-4. **3.5.6** `.flake8` config, then **4** moulinette (`~/Downloads/RAG/moulinette.zip`), until
-   `Student data is valid: True`. *Before the defense, no exceptions.*
-5. **1.1** Markdown chunker, then re-run `evaluate` on docs. *Keep it only if the number rises.*
-6. **6.3-6.6** dead code, docstrings, edge cases.
-7. **8** the README's 10 sections — material is already written in `completed.md`.
-8. **9** tests (I10), **I11** robustness pass.
-9. **I7, I8, I9** quality: prompt, answer evaluation, BM25 tuning.
-10. **I1-I5** bonus — only once the mandatory part validates in full. Suggested order:
-    I4 caching (smallest) → I5 API (reuses I4) → I1 embeddings → I2 hybrid → I3 incremental
-    (hardest). **H5** `chat` fits with I4/I5.
