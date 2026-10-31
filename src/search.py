@@ -35,6 +35,8 @@ def retrieve(
         chunk_path = os.path.join(save_directory, load_dir)
         chunks = json.loads(ft_open(chunk_path))
         retriever = bm25s.BM25.load(save_directory)
+        if retriever.scores['num_docs'] != len(chunks):
+            raise ValueError('Index mismatch, re-run index')
     except OSError:
         raise ValueError('Index Not found.')
     k = min(k, len(chunks))

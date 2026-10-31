@@ -22,22 +22,35 @@ def recalling(
     truth: dict[str, MoulinetteAnsweredQuestion]
 ) -> float:
     """Calculate the recall@k one time"""
-    hits = 0
 
     if len(truth) == 0 or len(questions.search_results) == 0 or k <= 0:
         raise ValueError("SOmthing wrong with the dataset to check")
     # print(questions)
-    for question in questions.search_results:
-        elem = truth[question.question_id]
-        for src in question.retrieved_sources[:k]:
-            if src.file_path == elem.sources[0].file_path and\
-                    iou(src.first_character_index,
-                        src.last_character_index,
-                        elem.sources[0].first_character_index,
-                        elem.sources[0].last_character_index) >= 0.05:
-                hits += 1
-                break
-    recall = hits / len(questions.search_results)
+    got = {
+        r.question_id: r.retrieved_sources for r in questions.search_results
+    }
+    total = 0.0
+    for q in truth.values():
+        srcs = got.get(q.question_id, [])[:k]
+        found = sum(any(s.file_path == t.file_path and
+                        iou(s.first_character_index, s.last_character_index,
+                            t.first_character_index, t.last_character_index
+                            ) >= 0.05
+                        for s in srcs
+                        ) for t in q.sources
+                    )
+        total += found / len(q.sources) if q.sources else 0.0
+
+        # elem = truth[question.question_id]
+        # for src in question.retrieved_sources[:k]:
+        #    if src.file_path == elem.sources[0].file_path and\
+        #            iou(src.first_character_index,
+        #                src.last_character_index,
+        #                elem.sources[0].first_character_index,
+        #                elem.sources[0].last_character_index) >= 0.05:
+        #        hits += 1
+        #        break
+        recall = total / len(truth)
 
     return recall
 

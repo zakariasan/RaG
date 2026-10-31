@@ -61,12 +61,15 @@ def index_machine(
     files_work = []
 
     for path, folder, files in os.walk(main_path):
+
+        if os.path.isfile(main_path):
+            files_work = [main_path]
         folder[:] = [d for d in folder if not is_ignored(d, pattern)]
         for file in files:
             if is_ignored(file, pattern):
                 continue
             else:
-                full_path = os.path.normpath(os.path.join(path, file))
+                full_path = os.path.relpath(os.path.join(path, file))
                 files_work.append(full_path)
 
     for fil in tqdm(files_work, desc='Chunking', unit=' file'):
@@ -113,8 +116,10 @@ def index(
 ) -> None:
     """Chunk file into chunks and index it depend on the chunk """
 
-    if max_chunk_size <= 0 or max_chunk_size > 2000:
-        raise ValueError("max_chunk_size must be positive from 1 to 2000")
+    if isinstance(max_chunk_size, bool) \
+            or not isinstance(max_chunk_size, int) \
+            or not 0 < max_chunk_size <= 2000:
+        raise ValueError("--max_chunk_size must be an integer in 1..2000")
 
     try:
 
@@ -122,7 +127,7 @@ def index(
         os.makedirs(save_dir, exist_ok=True)
         chunks_path = os.path.join(save_dir, 'chunks.json')
         if not chunk_meta:
-            raise ValueError('Somthing Wrong with chunks.json Rebuild again')
+            raise ValueError(f'No indexable files found under {files}')
 
         corpus_tokens = [
             tokenizer(t) for t in tqdm(txt, desc='Tokenizing', unit=' chunk')]
@@ -131,17 +136,17 @@ def index(
         if not any(corpus_tokens):
             raise ValueError('Tokenizer is empty Rebuild deleting old chunks')
 
+        retriever = bm25s.BM25()
+        retriever.index(corpus_tokens)
+        retriever.save(save_dir)
+
         with open(chunks_path, 'w', encoding='utf-8') as file_opend:
             json.dump(
                 [item.model_dump() for item in chunk_meta],
                 file_opend,
                 indent=4
             )
-        retriever = bm25s.BM25()
-        retriever.index(corpus_tokens)
-        retriever.save(save_dir)
-
         print(f"Ingestion complete! Indexed {len(chunk_meta)}", end='')
         print(f" chunks under {save_dir}")
-    except (OSError):
-        raise ValueError("Extract Chunks probleme.")
+    except (OSError) as e:
+        raise ValueError(f"Canot save and write Index: {e}")

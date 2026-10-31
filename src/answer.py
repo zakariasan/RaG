@@ -18,14 +18,17 @@ import uuid
 
 def answer(
     query: str = '',
+    k: int = 3,
     save_directory: str =
     'data/output/search_results/query',
-    k: int = 3
+    index_dir: str = 'data/processed',
+    out_file: str = 'student_search_result_and_answer.json'
 ) -> None:
     """Answer the query from retreved data"""
 
     from .generation import Generator
-    sources = retrieve(query, k=k)
+    os.makedirs(save_directory, exist_ok=True)
+    sources = retrieve(query, k=k, save_directory=index_dir)
 
     a = Augmentation()
     a.read_sources(sources)
@@ -43,10 +46,8 @@ def answer(
         k=k
     )
 
-    os.makedirs(save_directory, exist_ok=True)
     path = os.path.join(
-        save_directory, os.path.basename(
-            'student_search_result_and_answer.json')
+        save_directory, os.path.basename(out_file)
     )
 
     with open(path, 'w', encoding='utf-8') as f:
@@ -64,9 +65,12 @@ def answer_dataset(
     k: int = 3
 ) -> None:
 
-    if k <= 0:
-        raise ValueError('K must be positive')
+    if isinstance(k, bool) or not isinstance(k, int) or k <= 0:
+        raise ValueError('K must be positive.')
+
     from .generation import Generator
+
+    os.makedirs(save_directory, exist_ok=True)
     questions = StudentSearchResults.model_validate_json(
         ft_open(student_search_results_path)
     )
@@ -77,7 +81,7 @@ def answer_dataset(
     g = Generator()
 
     question_ans = []
-    i = 0
+    i = 1
     for question in tqdm(
             questions.search_results,
             desc='Answering',
@@ -98,7 +102,6 @@ def answer_dataset(
         k=questions.k
         )
 
-    os.makedirs(save_directory, exist_ok=True)
     path = os.path.join(
         save_directory, os.path.basename(student_search_results_path)
     )
