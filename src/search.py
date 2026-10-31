@@ -91,7 +91,7 @@ def search_dataset(
                 ds.rag_questions,
                 desc='Searching',
                 unit='question')):
-            tqdm.write(f'Q: {question.question}\nA: {ans}\n')
+            # tqdm.write(f'Q: {q}\n')
             srcs = [MinimalSource(**chunks[j]) for j in hits.get(i, [])]
             rows.append(
                 MinimalSearchResults(
