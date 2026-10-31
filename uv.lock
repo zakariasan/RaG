@@ -463,18 +463,6 @@ wheels = [
 ]
 
 [[package]]
-name = "markdown-chunker"
-version = "0.1.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyyaml" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f7/09/7dc5ec81c2bae6ef57cb2763ee8b044c1d873184847cd9cda134a83236c7/markdown_chunker-0.1.3.tar.gz", hash = "sha256:cc8770543a10c35ce253e5779c07c730d0e6c7c0a012e78a3af8402bb25c014b", size = 90475, upload-time = "2025-02-25T11:38:56.989Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/81/daaea4e64e91b7b15689d26b4222650af85f3555555a9e4f6a033c452f1d/markdown_chunker-0.1.3-py3-none-any.whl", hash = "sha256:77da642fa59680c8696157a0c12cddbd6b30b9a57acb178d577150f4c7b752d6", size = 27337, upload-time = "2025-02-25T11:38:53.856Z" },
-]
-
-[[package]]
 name = "markdown-it-py"
 version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1108,7 +1096,6 @@ dependencies = [
     { name = "bm25s" },
     { name = "fire" },
     { name = "flake8" },
-    { name = "markdown-chunker" },
     { name = "mypy" },
     { name = "pudb" },
     { name = "pydantic" },
@@ -1122,7 +1109,6 @@ requires-dist = [
     { name = "bm25s", specifier = ">=0.3.13" },
     { name = "fire", specifier = ">=0.7.1" },
     { name = "flake8", specifier = ">=7.4.1" },
-    { name = "markdown-chunker", specifier = ">=0.1.3" },
     { name = "mypy", specifier = ">=2.4.0" },
     { name = "pudb", specifier = ">=2025.1.5" },
     { name = "pydantic", specifier = ">=2.14.1" },
