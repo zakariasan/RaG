@@ -24,7 +24,7 @@ def recalling(
     """Calculate the recall@k one time"""
 
     if len(truth) == 0 or len(questions.search_results) == 0 or k <= 0:
-        raise ValueError("SOmthing wrong with the dataset to check")
+        raise ValueError("empty truth, empty results or k <= 0")
     # print(questions)
     got = {
         r.question_id: r.retrieved_sources for r in questions.search_results
@@ -50,7 +50,7 @@ def recalling(
         #                elem.sources[0].last_character_index) >= 0.05:
         #        hits += 1
         #        break
-        recall = total / len(truth)
+    recall = total / len(truth)
 
     return recall
 
@@ -60,7 +60,7 @@ def evaluate(
     'data/output/search_results/UnansweredQuestions/dataset_docs_public.json',
     dataset_path: str =
     'data/datasets_public/public/AnsweredQuestions/dataset_docs_public.json',
-    k: int = 10,
+    k: int = 10, src/search.py
     max_context_length: int = 2000
 ) -> None:
     """Check your answer protocol"""
