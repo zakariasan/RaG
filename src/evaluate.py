@@ -59,8 +59,8 @@ def evaluate(
     student_search_results_path: str =
     'data/output/search_results/UnansweredQuestions/dataset_docs_public.json',
     dataset_path: str =
-    'data/datasets_public/public/AnsweredQuestions/dataset_docs_public.json',
-    k: int = 10, src/search.py
+    'data/datasets/AnsweredQuestions/dataset_docs_public.json',
+    k: int = 10,
     max_context_length: int = 2000
 ) -> None:
     """Check your answer protocol"""

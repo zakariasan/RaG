@@ -28,6 +28,7 @@ def retrieve(
     if isinstance(k, bool) or not isinstance(k, int) or k <= 0 or k >= 100:
         raise ValueError('K must be positive.')
 
+    query = str(query)
     tokens = tokenizer(query)
     if len(tokens) == 0:
         raise ValueError('Empty query')
@@ -72,7 +73,7 @@ def search_dataset(
     """search from the input datasets"""
 
     if k <= 0:
-        raise ValueError("K must be positive.")
+        raise ValueError("--k must be positive.")
     try:
         ds = RagDataset.model_validate_json(ft_open(dataset_path))
         chunks = json.loads(ft_open(os.path.join(save_processed, saved_file)))
@@ -82,6 +83,8 @@ def search_dataset(
         hits: dict[int, list[int]] = {}
         if keep:
             retriever = bm25s.BM25.load(save_processed)
+            if retriever.scores['num_docs'] != len(chunks):
+                raise ValueError('Index Mismatch  re-run the index.')
             res, _scores = retriever.retrieve(
                 [all_tokens[i] for i in keep],
                 k=k
@@ -107,5 +110,5 @@ def search_dataset(
         with open(path, 'w', encoding='utf-8') as f:
             f.write(out.model_dump_json(indent=4))
     except (OSError) as e:
-        raise ValueError(f"Erro form serach dataset: {e}")
+        raise ValueError(f"ErroR form serach dataset: {e}")
     print(f'Saved student_search_results to {path}')

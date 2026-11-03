@@ -3,6 +3,8 @@ from .utils import get_offsets, hard_split
 
 def chunk_txt_file(filename: str, max_size: int) -> list[tuple[int, int]]:
     """ try to chunks a text file """
+    if not filename:
+        return []
     # with open(filename, 'r', encoding='utf-8') as f:
     #    src_file = f.read()
     line_offsets = get_offsets(filename.splitlines(keepends=True))

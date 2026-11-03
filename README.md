@@ -25,8 +25,9 @@ disk space (torch + model weights). Runs on CPU; uses a GPU if available.
 ```bash
 make install      # uv sync
 make run          # index the corpus (data/raw -> data/processed)
-make lint         # flake8 + mypy
-make debug        # run the CLI under the debugger
+make lint         # flake8 . && mypy . --warn-return-any (+ extra checks)
+make lint-strict  # flake8 . && mypy . --strict
+make debug        # run the CLI under the debugger (pudb)
 make clean        # remove __pycache__ and .mypy_cache
 ```
 
@@ -74,17 +75,28 @@ uv run python -m src answer_dataset \
     --save_directory data/output/search_results_and_answer/UnansweredQuestions
 ```
 
-| Command | Options |
+| Command | Options (default) |
 |---|---|
-| `index` | `--max_chunk_size` (2000), `--files` (`data/raw`), `--save_dir` (`data/processed/`) |
-| `search` | `query`, `--k` (10), `--save_directory` (index dir) |
-| `search_dataset` | `--dataset_path`, `--k` (10), `--save_directory`, `--save_processed` (index dir) |
-| `answer` | `query`, `--k` (3) |
-| `answer_dataset` | `--student_search_results_path`, `--save_directory`, `--k` (3, sources per prompt) |
-| `evaluate` | `--student_search_results_path`, `--dataset_path`, `--max_context_length` (2000) |
+| `index` | `--max_chunk_size` (2000, must be 1..2000), `--files` (`data/raw`, a folder or one file), `--save_dir` (`data/processed/`) |
+| `search` | `query`, `--k` (10), `--save_directory` (index dir, `data/processed/`), `--load_dir` (`chunks.json`) |
+| `search_dataset` | `--dataset_path`, `--k` (10), `--save_directory` (`data/output/search_results/UnansweredQuestions`), `--save_processed` (index dir, `data/processed`), `--saved_file` (`chunks.json`) |
+| `answer` | `query`, `--k` (3), `--save_directory` (`data/output/search_results_and_answer/query`), `--index_dir` (`data/processed`), `--out_file` (`student_search_result_and_answer.json`, file name only) |
+| `answer_dataset` | `--student_search_results_path`, `--save_directory` (`data/output/search_results_and_answer/UnansweredQuestions`), `--k` (3, sources per prompt; also the `k` written in the output) |
+| `evaluate` | `--student_search_results_path`, `--dataset_path`, `--k` (10), `--max_context_length` (2000); always reports recall@1/3/5/10 |
 
-Degenerate inputs (empty query, `k <= 0`, missing files, malformed JSON) print an
-error and exit with code 1; Ctrl-C exits with 130.
+Output files of `search_dataset` / `answer_dataset` keep the input file name
+(e.g. `dataset_docs_public.json`) inside `--save_directory`.
+
+Degenerate inputs (empty or punctuation-only query, `k <= 0`, non-integer `k`,
+bad `--max_chunk_size`, missing files or index, index/chunks mismatch, malformed
+JSON) print an error and exit with code 1; Ctrl-C exits with 130. A source that
+cannot be read during `answer_dataset` is reported in that question's `answer`
+and the run continues. In a dataset, a question with no usable words gets an
+empty `retrieved_sources` list instead of random results.
+
+`--dataset_path` may point to `UnansweredQuestions` or `AnsweredQuestions` files;
+keep `--save_directory` scoped by dataset (`.../search_results/AnsweredQuestions`),
+because the public datasets share file names.
 
 ## System architecture
 
@@ -128,12 +140,23 @@ and that chunks of a file cover it contiguously (no gaps, no overlap):
   statements are merged while they fit. A statement that is too large (e.g. a big
   class) is split recursively at its body statements; if it has no body (a long
   expression) it falls back to line-based splitting.
-- **Markdown / text**: lines are packed greedily into chunks up to the limit, so a
-  chunk never cuts a line in the middle. A single line longer than the limit is
-  cut hard at the limit.
+- **Markdown / text** (every non-`.py` file): lines are packed greedily into
+  chunks up to the limit, so a chunk never cuts a line in the middle and code
+  blocks and paragraphs mostly stay together. A single line longer than the
+  limit is cut hard at the limit (`hard_split` in `src/utils.py`, also the
+  fallback of the Python chunker). A heading-based Markdown splitter was tried
+  and removed to keep one simple, predictable text path.
 
-Files that are not valid UTF-8 (images, binaries) or Python files with syntax
-errors are skipped.
+Which strategy runs depends only on the extension: `.py` goes to the AST chunker,
+everything else to the line chunker.
+
+Skipped files: not valid UTF-8 (56 in vLLM 0.10.1: images, binaries) and empty
+files (123, no chunk). A `.py` file that fails to parse would be skipped too
+(none in vLLM 0.10.1). Folders and files matched by `.gitignore` are not walked.
+
+Measured on the whole corpus: 2871 files walked, 2692 indexed, 18737 chunks
+(15145 Python, 3592 text), largest chunk 2000 characters, chunks of every file
+contiguous from 0 to the end of the file.
 
 ## Retrieval method
 
@@ -157,22 +180,34 @@ Measured on an Intel i7-7600U (2 cores / 4 threads, no GPU), public datasets,
 
 | Metric | Result | Requirement |
 |---|---|---|
-| Indexing time (2874 files, 18738 chunks) | 7.9 s | ≤ 300 s |
-| `search_dataset`, 100 questions | ~0.5 s | ≤ 90 s / 200 q |
+| Indexing time (2871 files walked, 2692 indexed, 18737 chunks) | 7.9 s | ≤ 300 s |
+| `search_dataset`, 100 questions (incl. Python start + index load) | ~0.5 s | ≤ 90 s / 200 q |
 | Docs recall@1 / @3 / @5 / @10 | 0.540 / 0.760 / **0.830** / 0.880 | @5 ≥ 0.80 |
 | Code recall@1 / @3 / @5 / @10 | 0.354 / 0.566 / **0.657** / 0.697 | @5 ≥ 0.50 |
-| `answer`, one question, k=3 | ~60 s (fp32 CPU) | — |
+| `answer`, one question, k=3 | ~23 s incl. model load (fp32 CPU) | — |
 
 Effect of chunk size on recall@5:
 
 | `max_chunk_size` | chunks | docs@5 | code@5 |
 |---|---|---|---|
-| 2000 | 18738 | 0.830 | 0.657 |
+| 2000 | 18737 | 0.830 | 0.657 |
 | 1500 | 24900 | 0.810 | 0.646 |
 | 1000 | 37050 | 0.830 | 0.596 |
 
 Smaller chunks mostly hurt code questions: a function split in several pieces
 spreads its identifiers, and each piece scores lower.
+
+Prompt size sent to Qwen3-0.6B (context window 40960 tokens), measured on two
+questions:
+
+| `--k` (sources in the prompt) | prompt tokens |
+|---|---|
+| 3 (default) | ~1000 – 1150 |
+| 10 | ~3600 – 4000 |
+| 50 | ~19300 – 20300 |
+
+Every source adds about 400 tokens, which is why `answer` defaults to k=3: short
+prompts keep CPU generation near 20 s and leave the model less text to get lost in.
 
 ## Design decisions
 
@@ -195,8 +230,8 @@ spreads its identifiers, and each piece scores lower.
 ## Challenges faced
 
 - **CPU generation speed**: the default bf16 dtype never finished on this CPU;
-  switching to fp32 brought one answer to about a minute. Fewer sources (k=3)
-  and a token limit keep prompts short.
+  switching to fp32 brought one answer to about 20 s. Fewer sources (k=3) and
+  `max_new_tokens=128` keep prompts and answers short.
 - **Slow CLI start**: importing torch for every command made `search` take
   20–40 s; moving the import into the answer functions fixed it.
 - **Chunks over the 2000-character limit**: the moulinette rejects the whole output
@@ -206,7 +241,26 @@ spreads its identifiers, and each piece scores lower.
   they now return empty sources instead of random results, and `k <= 0`, missing
   files and malformed JSON give clear errors and a non-zero exit code.
 - **Exact paths**: the grader compares `file_path` verbatim, so paths are stored
-  exactly as walked from `data/raw`.
+  exactly as walked from `data/raw`, relative to the project root (also when
+  `--files` is absolute, ends with `/` or starts with `./`).
+
+## Known limitations
+
+- Qwen3-0.6B sometimes answers from its own knowledge instead of the sources
+  (e.g. a general-knowledge question outside vLLM), and can get a default value
+  wrong even when the right chunk is retrieved.
+- A query of more than about 1500 words is refused by Python Fire's argument
+  parser (`Parser stack overflowed`).
+- A query with no word in common with the corpus still returns the top BM25
+  chunks (all with score 0).
+- The Markdown/text chunker does not use Markdown structure (headings); it
+  packs whole lines.
+
+## Testing
+
+`test.md` lists every manual test (command, expected result, actual result):
+lint, indexing, corpus integrity, search edge cases, the full subject
+walkthrough with the moulinette, and answer generation.
 
 ## Resources
 
@@ -226,7 +280,7 @@ AI (Claude) was used for:
 
 - reviewing code and finding bugs, testing edge cases of the CLI, and measuring
   recall and timings;
-- drafting this README and the test report.
+- drafting this README and the test report (`test.md`).
 
 All code in `src/` was written by me; every suggestion was checked, tested and
 understood before being kept.

@@ -20,7 +20,7 @@ class Generator:
         self,
         msg: list[dict[str, str]],
         max_new_tokens: int = 128
-    ) -> Any:
+    ) -> str:
         """Return the msg from llm"""
 
         text = self.tokenizer.apply_chat_template(
@@ -43,11 +43,11 @@ class Generator:
         new = out[0][ids[
             'input_ids'
         ].shape[1]:]
-        return self.tokenizer.decode(
+        answer = self.tokenizer.decode(
             new,
             skip_special_tokens=True
-        ).strip()
+        )
 
-    #    if not isinstance(answering, str):
-    #        raise TypeError("Expected decode template to return a string")
-    #    return answering.strip()
+        if not isinstance(answer, str):
+            raise TypeError('Expected decode to return string')
+        return answer.strip()

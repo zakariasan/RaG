@@ -66,7 +66,7 @@ def answer_dataset(
 ) -> None:
 
     if isinstance(k, bool) or not isinstance(k, int) or k <= 0:
-        raise ValueError('--K must be positive.')
+        raise ValueError('--k must be positive.')
 
     from .generation import Generator
 

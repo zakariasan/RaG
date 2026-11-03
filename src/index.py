@@ -61,7 +61,7 @@ def index_machine(
     files_work = []
 
     if os.path.isfile(main_path):
-        files_work = [main_path]
+        files_work = [os.path.relpath(main_path)]
     for path, folder, files in os.walk(main_path):
 
         folder[:] = [d for d in folder if not is_ignored(d, pattern)]
@@ -149,4 +149,4 @@ def index(
         print(f"Ingestion complete! Indexed {len(chunk_meta)}", end='')
         print(f" chunks under {save_dir}")
     except (OSError) as e:
-        raise ValueError(f"Canot save and write Index: {e}")
+        raise ValueError(f"Cannot save and write Index: {e}")
