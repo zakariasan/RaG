@@ -60,10 +60,10 @@ def index_machine(
     pattern = git_file()
     files_work = []
 
+    if os.path.isfile(main_path):
+        files_work = [main_path]
     for path, folder, files in os.walk(main_path):
 
-        if os.path.isfile(main_path):
-            files_work = [main_path]
         folder[:] = [d for d in folder if not is_ignored(d, pattern)]
         for file in files:
             if is_ignored(file, pattern):
@@ -134,7 +134,7 @@ def index(
         # corpus_tokens = bm25s.tokenize(''.join(txt))
 
         if not any(corpus_tokens):
-            raise ValueError('Tokenizer is empty Rebuild deleting old chunks')
+            raise ValueError('No tokens produced (max_chunk_size too small?)')
 
         retriever = bm25s.BM25()
         retriever.index(corpus_tokens)

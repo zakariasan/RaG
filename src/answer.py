@@ -20,7 +20,7 @@ def answer(
     query: str = '',
     k: int = 3,
     save_directory: str =
-    'data/output/search_results/query',
+    'data/output/search_results_and_answer/query',
     index_dir: str = 'data/processed',
     out_file: str = 'student_search_result_and_answer.json'
 ) -> None:
@@ -66,7 +66,7 @@ def answer_dataset(
 ) -> None:
 
     if isinstance(k, bool) or not isinstance(k, int) or k <= 0:
-        raise ValueError('K must be positive.')
+        raise ValueError('--K must be positive.')
 
     from .generation import Generator
 
@@ -81,16 +81,17 @@ def answer_dataset(
     g = Generator()
 
     question_ans = []
-    i = 1
     for question in tqdm(
             questions.search_results,
             desc='Answering',
             unit='question'
     ):
-        i += 1
-        a.read_sources(question.retrieved_sources[:k])
-        msg = a.build_prompt(question.question)
-        ans = g.generate(msg)
+        try:
+            a.read_sources(question.retrieved_sources[:k])
+            msg = a.build_prompt(question.question)
+            ans = g.generate(msg)
+        except OSError as e:
+            ans = f'Could not read sources: {e}'
         question_ans.append(MinimalAnswer(
             **question.model_dump(),
             answer=ans
@@ -99,7 +100,7 @@ def answer_dataset(
 
     out = StudentSearchResultsAndAnswer(
         search_results=question_ans,
-        k=questions.k
+        k=k
         )
 
     path = os.path.join(
@@ -108,5 +109,8 @@ def answer_dataset(
 
     with open(path, 'w', encoding='utf-8') as f:
         f.write(out.model_dump_json(indent=4))
-    print(f'Processed {i} of {len(questions.search_results)} questions')
+    print(
+        f'Processed {question_ans} '
+        f'of {len(questions.search_results)} questions'
+    )
     print(f'Saved student_search_results_and_answer to {path}')
