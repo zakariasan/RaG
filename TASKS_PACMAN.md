@@ -1,13 +1,13 @@
 # Pac-Man project — TASKS
 
-## PROGRESS (updated 2026-11-04)
+## PROGRESS (updated 2026-11-05)
 
 | # | Task | Status |
 |---|------|--------|
 | 2 | Pacgums: placement, eating, score, HUD update | DONE (tested) |
 | 3 | Ghost collision, lives, respawn | DONE (tested) |
 | 4 | Afraid mode, eat ghost, ghost respawn, blue color, hide eaten | DONE (9/9 tests pass) |
-| 5 | Levels, timer, win/lose | IN PROGRESS: only 5a (`config.seed` in `__main__.py`) done. Left: 5b–5f + `self.level = 1` (`game.py:41`) |
+| 5 | Levels, timer, win/lose | DONE except 1 line: next-level seed `randint(seed+1, 1337)` crashes if seed ≥ 1337, see "Task 5 open items" |
 | 1 | Config loader | PARTIAL: `#`/`//` comments done. Left: unknown keys ignored, bad value → default + message, no traceback, remove `check_consistency` |
 | 6 | Game state machine (Menu → Game → End → Name → Menu, new-game reset) | TODO |
 | 7 | Pause menu (+ pause-safe timers for afraid/respawn) | TODO |
@@ -20,14 +20,24 @@
 | 14 | README + `docs/project_management/` | TODO |
 
 Bugs from section 0 still open: B1, B3, B4, B6, B7, B8, B9, B10, B11, B13, B14–B22.
-Fixed: B2 (seed), B5 (comments), B12 (pacgum placement).
+Fixed: B2 (level 1 = `config.seed`), B5 (comments), B12 (pacgum placement).
 Extra found during work:
 - Config comment strip shifts JSON error line numbers → replace comment lines with `"\n"` instead of dropping them.
 - After game over, "Start Game" resumes with `lives = 0` → task 6 must reset score/lives/level/maze.
 - Timers use `pygame.time.get_ticks()` → keep running during pause → fix in task 7.
-- State names used in code: `"MENU"`, `"PLAYING"`, `"GaMe 0vER"`, `"VICTORY"` — reuse exactly.
+- State names used in code: `"MENU"`, `"PLAYING"`, `"GaMe 0vER"`, `"WINNER"` — reuse exactly.
 
-Order of remaining work: **5 → 6 → 9 → 8 → 7 → 10 → 1 → 11 → 12 → 14**.
+Task 5 open items (re-checked 2026-11-05, file on disk):
+- DONE: `self.level = 1`; `new_maze(seed)` takes a seed, `__init__` uses `config.seed`; `__init__` raises
+  `RuntimeError` if maze is None; `level_win` resets `self.dt = 0`; `__main__` message → "Game failed".
+- OPEN: `level_win` `random.randint(self.config.seed + 1, 1337)` → `ValueError` when `seed >= 1337`
+  (reviewer edits config → crash on first level win).
+  Fix: `seed = self.config.seed + self.level` (never crashes, new maze per level, reproducible)
+  or `random.randint(1, 1_000_000)`. Test: `"seed": 2000`, `pacgum: 1`, eat all gums → level 2 loads.
+- REMINDER: `setting.json` has `pacgum: 1` for testing → back to `42` before commit.
+- Lint (flake8 E117 indent in `level_win`, dead comments in `__main__`, unused imports) → task 12, at the end.
+
+Order of remaining work: **6 → 9 → 8 → 7 → 10 → 1 → 11 → 12 → 14**. NEXT = fix task 5 seed line, then task 6 (concrete steps in section 6).
 
 ---
 
@@ -237,6 +247,15 @@ States: `MENU → PLAYING ⇄ PAUSED → GAME_OVER / VICTORY → NAME_INPUT → 
 
 **Done when:** full loop Main Menu → game → win/lose → enter name → main menu works without restarting program.
 
+**Concrete steps for current code (2026-11-05):**
+1. `class State(Enum): MENU, PLAYING, GAME_OVER, VICTORY` → replace `"MENU"`, `"PLAYING"`, `"GaMe 0vER"`, `'WINNER'`.
+2. `reset_game()`: `score = 0`, `lives = config.lives`, `level = 1`, `new_maze(config.seed)`, `load_level()`, `dt = 0`, state PLAYING.
+3. "Start Game" click → `reset_game()` (today only sets PLAYING → resumes with 0 lives after game over).
+4. `__init__` ends with `state = State.MENU`, no `self.run()`. `__main__`: `game.run()` inside the same try.
+5. "Exit" button → `self.running = False`.
+6. GAME_OVER / VICTORY: placeholder text + "Enter → menu" (real screens in task 9).
+7. Remove `K_SPACE → MENU` (pause on ESC comes in task 7).
+
 ---
 
 ## 7. Pause menu
@@ -434,11 +453,30 @@ Line numbers = state on 2026-11-04.
 |------|-------|--------------|--------------|
 | `src/parser/load_config.py` | `from_json_file()` ~l.46 | `json.load` → filter lines then `json.loads` | Lines starting with `#` or `//` (after spaces) removed before parsing. |
 
-## Task 5 (started)
+## Task 5 — Levels, timer, win/lose
 
 | File | Where | What changed | How it works |
 |------|-------|--------------|--------------|
-| `src/__main__.py` | l.18-20 | `seed=config.seed, perfect=False` | Level 1 maze now comes from config seed, not hardcoded 42. |
+| `src/__main__.py` | whole | No more `MazeGenerator` call; only `Game(config)` | Game builds every maze itself, level 1 included. |
+| `src/logic/game.py` | top import | `from mazegenerator import MazeGenerator` | |
+| `src/logic/game.py` | `__init__(self, config)` | Signature without `maze`. Calls `new_maze()` before `calculate_dimensions()`, sets `self.dt = 0`, calls `load_level()` | Maze must exist before cellsize is computed. |
+| `src/logic/game.py` | `load_level()` | New | `calculate_maze_dimensions()` → `MazeEnv.setup()` → new Pacman + 4 ghosts → `set_pacgums()` → `time_left = level_max_time`. Uses `calculate_maze_dimensions` (not `calculate_dimensions`) so the HUD keeps its surface. |
+| `src/logic/game.py` | `new_maze()` | New | `MazeGenerator(size, seed, perfect=False)` in try/except → `self.maze = gen.maze`, returns False on error (no crash). |
+| `src/logic/game.py` | `update_timer()` | New | `time_left -= dt`; at 0 → timer restarts + `lose_life()` (our choice, to document in README). |
+| `src/logic/game.py` | `level_win()` | Filled | `level += 1`; above `config.levels` → `state = "WINNER"`; else `new_maze()` + `load_level()`; maze error → `"MENU"`. Score and lives kept. |
+| `src/logic/game.py` | `run()` | 2 edits | `update_timer()` after collisions; HUD gets `int(self.time_left)`; `self.dt = self.clock.tick(60) / 1000` at end of frame (seconds since last frame). |
+
+Test results (headless, 2026-11-05): level up, new maze, new gums, timer reset, score kept, time-up = -1 life,
+WINNER after last level, level 2 differs between runs → PASS. Level 1 same between runs → FAIL (open item).
+
+Follow-up fixes (2026-11-05):
+
+| File | Where | What changed | How it works |
+|------|-------|--------------|--------------|
+| `src/logic/game.py` | `__init__` | `self.level = 1`; `if not self.new_maze(self.config.seed): raise RuntimeError(...)` | Level 1 always same maze for same config. No `None` maze reaches `load_level`. |
+| `src/logic/game.py` | `new_maze(self, seed)` | Seed is a parameter | Caller decides: `config.seed` for level 1, other seed for next levels. |
+| `src/logic/game.py` | `level_win()` | New seed for next level; `self.dt = 0` before `load_level()` | dt reset stops timer jumping after slow maze generation frame. Seed line still open (see top). |
+| `src/__main__.py` | except | Message "Game failed : ..." | `Game(config)` (incl. `run()`) inside try → no traceback. |
 
 ---
 
@@ -452,18 +490,31 @@ python -m src setting.json
    ├─ src/__main__.py
    │    ├─ Config.from_json_file(path)        src/parser/load_config.py
    │    │     read file → drop # and // lines → json → pydantic validates
-   │    ├─ MazeGenerator(size, seed, perfect=False).maze     mazegenerator/
-   │    │     → list[list[int]], each cell = wall bits
-   │    └─ Game(maze, config)                 src/logic/game.py
+   │    └─ Game(config)                       src/logic/game.py
    │
    └─ Game.__init__
+        ├─ new_maze(config.seed) MazeGenerator(size, seed, perfect=False).maze
+        │                       None → RuntimeError → __main__ prints "Game failed"
+        │                       → list[list[int]], each cell = wall bits
         ├─ pygame window, surfaces (left 30% HUD, right 70% maze)
         ├─ calculate_dimensions() → cellsize + offsets (maze centered)
-        ├─ MazeEnv.setup(...)   shared "global" box: maze, surface,
-        │                       offsets, cellsize, config
-        ├─ Pacman()  (center)   4 ghosts (one per corner)
-        ├─ set_pacgums()        4 super in corners + N normal
+        ├─ HUD, main menu
+        ├─ load_level()
+        │     ├─ MazeEnv.setup(...)  shared box: maze, surface, offsets,
+        │     │                      cellsize, config
+        │     ├─ Pacman() (center), 4 ghosts (one per corner)
+        │     ├─ set_pacgums()       4 super in corners + N normal
+        │     └─ time_left = level_max_time
         └─ run()                main loop (60 fps)
+
+Level end (all gums eaten) → level_win():
+   level += 1 → past config.levels → "WINNER"
+             → else new_maze(other seed) → dt = 0 → load_level()
+   score + lives kept between levels
+
+After task 6 (target):
+   __main__: game = Game(config); game.run()     (run no longer in __init__)
+   Game starts in State.MENU → "Start Game" → reset_game() → PLAYING
 ```
 
 ## 2. Maze cell format (from generator)
@@ -525,7 +576,9 @@ eat super gum ─────► score += 50, all ghosts afraid (afraid_time s)
 touch afraid ghost ► score += 200, ghost eaten → respawn in corner later
 touch normal ghost ► lives -1, all back to start   (cheat_mode: nothing)
 lives == 0 ────────► state "GaMe 0vER"   (screen TODO task 9)
-all gums eaten ────► level_win()         (next level TODO task 5)
+all gums eaten ────► level_win() → next level, new maze, timer reset
+last level done ───► state "WINNER"      (screen TODO task 9)
+timer reaches 0 ───► lives -1, timer restarts
 ```
 
 ## 7. Target flow when all tasks done
